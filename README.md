@@ -1,4 +1,4 @@
-# 🏗️ Geniebelt Weekly Reporter
+# 🏗️ Chronos
 
 Genera reportes semanales de obra a partir de los archivos JSON exportados desde Geniebelt.
 Funciona con cualquier proyecto: detecta torres, agrupadores y fechas CTO automáticamente.
