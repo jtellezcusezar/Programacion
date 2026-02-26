@@ -12,8 +12,8 @@ import streamlit.components.v1 as components
 from datetime import date, timedelta
 import json
 
-from processor_v2 import process_project
-from renderer_v2  import render_dashboard
+from processor import process_project
+from renderer  import render_dashboard
 
 
 # ─── Configuración ────────────────────────────────────────────────────────────
