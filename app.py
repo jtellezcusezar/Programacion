@@ -1,10 +1,10 @@
 """
-app.py  v2
-==========
-Cambios vs v1:
- - Múltiples proyectos sin tabs: todo en una página continua
- - Botón PDF directo (print del browser, sin librerías externas)
- - Usa renderer_v2 que acepta lista de proyectos
+app.py  v3  — Chronos
+=====================
+- Nombre: Chronos
+- Sin botón descarga HTML
+- Botón PDF vive dentro del HTML (persiste comentarios)
+- Múltiples JSONs en una sola página con encabezado unificado
 """
 
 import streamlit as st
@@ -15,11 +15,10 @@ import json
 from processor import process_project
 from renderer  import render_dashboard
 
-
 # ─── Configuración ────────────────────────────────────────────────────────────
 
 st.set_page_config(
-    page_title="Reportes Semanales de Obra",
+    page_title="Chronos — Reportes de Obra",
     page_icon="🏗️",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -27,8 +26,8 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  #MainMenu {visibility:hidden;} footer{visibility:hidden;}
-  .block-container{padding-top:1.5rem;padding-bottom:1rem;}
+  #MainMenu{visibility:hidden} footer{visibility:hidden}
+  .block-container{padding-top:1.5rem;padding-bottom:1rem}
   .app-title{font-size:22px;font-weight:700;color:#1e293b;margin-bottom:2px}
   .app-sub  {font-size:13px;color:#64748b;margin-bottom:20px}
   .file-card{background:#f0fdf4;border:1px solid #bbf7d0;
@@ -43,11 +42,11 @@ st.markdown("""
 MONTHS = ["","Ene","Feb","Mar","Abr","May","Jun",
            "Jul","Ago","Sep","Oct","Nov","Dic"]
 
-
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 with st.sidebar:
-    st.markdown("## 🏗️ Reportes de Obra")
+    st.markdown("## 🏗️ Chronos")
+    st.markdown("Reportes Semanales de Obra")
     st.markdown("---")
 
     st.markdown("### 📅 Fecha de corte")
@@ -59,14 +58,14 @@ with st.sidebar:
         value=monday,
         help="Generalmente el lunes de la semana a reportar.",
     )
-    week_end = ref_date + timedelta(days=5)   # sábado
+    week_end = ref_date + timedelta(days=5)
     st.caption(
         f"Semana: **{ref_date.day} {MONTHS[ref_date.month]}** – "
         f"**{week_end.day} {MONTHS[week_end.month]} {week_end.year}**"
     )
 
     st.markdown("---")
-    st.markdown("### 📂 Archivos de proyecto")
+    st.markdown("### 📂 Proyectos")
     st.caption("Geniebelt → Proyecto → Exportar → JSON")
 
     uploaded_files = st.file_uploader(
@@ -77,16 +76,15 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.caption("v2.0 · Geniebelt Weekly Reporter")
+    st.caption("Chronos v3.0")
 
 
 # ─── Página principal ─────────────────────────────────────────────────────────
 
-st.markdown('<div class="app-title">Reportes Semanales de Obra</div>',
-            unsafe_allow_html=True)
+st.markdown('<div class="app-title">🏗️ Chronos</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="app-sub">Sube los archivos JSON exportados desde Geniebelt. '
-    'Todos los proyectos se muestran en una sola página.</div>',
+    '<div class="app-sub">Reportes semanales de obra · '
+    'Sube los archivos JSON exportados desde Geniebelt.</div>',
     unsafe_allow_html=True,
 )
 
@@ -99,26 +97,20 @@ if not uploaded_files:
     with st.expander("¿Cómo funciona?"):
         st.markdown("""
         1. **Exporta** el JSON de cada proyecto desde Geniebelt
-        2. **Sube** los archivos en el panel izquierdo (uno o varios a la vez)
-        3. **Selecciona** la fecha de corte (lunes de la semana a reportar)
-        4. La app genera el reporte de todos los proyectos en una sola página
-        5. Usa **Imprimir / Guardar como PDF** para exportar a PDF directamente
+        2. **Sube** los archivos en el panel izquierdo
+        3. **Selecciona** la fecha de corte (lunes de la semana)
+        4. El reporte se genera automáticamente con todos los proyectos
+        5. Usa el botón **🖨️ Imprimir / Guardar como PDF** dentro del reporte
 
-        **El reporte incluye:**
-        - Actividades que inician durante la semana (lunes a sábado)
-        - Actividades atrasadas con progreso registrado
-        - Agrupadas por torre y sección
-        - Fechas CTO ordenadas por fecha
-        - Gantt semanal con barras por estado
-        - Campo de comentarios por actividad y por CTO
+        **El botón PDF está dentro del reporte** — así los comentarios
+        que escribas se incluyen en el PDF.
         """)
     st.stop()
 
 
-# ─── Procesar archivos ─────────────────────────────────────────────────────────
+# ─── Procesar ─────────────────────────────────────────────────────────────────
 
 processed = []
-
 with st.spinner("Procesando archivos..."):
     for f in uploaded_files:
         try:
@@ -131,9 +123,7 @@ with st.spinner("Procesando archivos..."):
 ok_files    = [(n, d) for n, d, e in processed if d is not None]
 error_files = [(n, e) for n, d, e in processed if e is not None]
 
-
-# ─── Panel de estado ──────────────────────────────────────────────────────────
-
+# Panel de estado
 label = f"📂 {len(ok_files)} proyecto(s) cargado(s)"
 if error_files:
     label += f" · ⚠️ {len(error_files)} con error"
@@ -143,16 +133,13 @@ with st.expander(label, expanded=True):
     for i, (fname, data, err) in enumerate(processed):
         with cols[i % 3]:
             if data:
-                n_towers = len(data["towers"])
-                n_tasks  = sum(len(tw["tasks"]) for tw in data["towers"])
+                n_tw = len(data["towers"])
+                n_t  = sum(len(tw["tasks"]) for tw in data["towers"])
                 st.markdown(f"""
                 <div class="file-card">
                   <div class="fc-name">✅ {fname}</div>
                   <div class="fc-meta">{data['project_name']}</div>
-                  <div class="fc-meta">
-                    {n_towers} torres · {n_tasks} actividades ·
-                    {data['overall_progress']*100:.1f}% avance
-                  </div>
+                  <div class="fc-meta">{n_tw} torres · {n_t} actividades · {data['overall_progress']*100:.1f}% avance</div>
                 </div>""", unsafe_allow_html=True)
             else:
                 st.markdown(f"""
@@ -165,62 +152,15 @@ if not ok_files:
     st.error("No se pudo procesar ningún archivo.")
     st.stop()
 
-
-# ─── Generar HTML combinado ───────────────────────────────────────────────────
-
-all_data = [d for _, d in ok_files]
-html     = render_dashboard(all_data)   # un solo HTML con todos los proyectos
-
-
-# ─── Botones de acción ────────────────────────────────────────────────────────
-
-col1, col2, col3 = st.columns([1, 1, 5])
-
-# Botón descargar HTML
-project_names = "_".join(d["project_name"][:15].replace(" ", "_") for d in all_data)
-download_name = f"reporte_{project_names}_{ref_date}.html"
-
-with col1:
-    st.download_button(
-        label="⬇️ Descargar HTML",
-        data=html.encode("utf-8"),
-        file_name=download_name,
-        mime="text/html",
-        use_container_width=True,
-        help="Descarga el HTML para guardarlo o compartirlo.",
-    )
-
-# Botón PDF: inyecta un script que llama window.print() dentro del iframe
-with col2:
-    if st.button("🖨️ Imprimir / PDF", use_container_width=True,
-                  help="Abre el diálogo de impresión. Selecciona 'Guardar como PDF'."):
-        st.session_state["trigger_print"] = True
-
-with col3:
-    st.caption(
-        "💡 Para PDF: haz clic en **Imprimir / PDF** → elige destino "
-        "**'Guardar como PDF'** → guarda. Los comentarios se incluyen en el PDF."
-    )
-
 st.markdown("---")
 
+# ─── Renderizar ───────────────────────────────────────────────────────────────
 
-# ─── Renderizar dashboard ─────────────────────────────────────────────────────
+all_data = [d for _, d in ok_files]
+html     = render_dashboard(all_data)
 
-# Si se pidió imprimir, inyectamos window.print() al final del HTML
-trigger_print = st.session_state.pop("trigger_print", False)
-
-if trigger_print:
-    html_to_render = html.replace(
-        "</body>",
-        "<script>window.addEventListener('load', function(){ window.print(); });</script></body>"
-    )
-else:
-    html_to_render = html
-
-# Altura dinámica
 n_tasks  = sum(len(tw["tasks"])  for d in all_data for tw in d["towers"])
 n_groups = sum(len(tw["groups"]) for d in all_data for tw in d["towers"])
-height   = max(900, 250 + n_tasks * 30 + n_groups * 28 + len(all_data) * 120)
+height   = max(900, 300 + n_tasks * 30 + n_groups * 28 + len(all_data) * 100)
 
-components.html(html_to_render, height=height, scrolling=True)
+components.html(html, height=height, scrolling=True)
