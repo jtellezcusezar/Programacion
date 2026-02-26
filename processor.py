@@ -1,110 +1,72 @@
 """
-processor.py
-============
-Lee el JSON exportado desde Geniebelt y retorna datos estructurados
-listos para renderizar. No depende de Streamlit ni de HTML.
-
-Uso:
-    from processor import process_project
-    data = process_project("proyecto.json")
-    data = process_project(json_string)   # también acepta string
+processor.py  v2
+================
+Cambios vs v1:
+ - Semana lunes→sábado (6 días)
+ - Cálculo de atraso propio: fecha_corte - fecha_fin (atrasadas)
+                              fecha_corte - fecha_inicio (que inician con atraso)
+ - Tope de atraso: si >= 100 → mostrar como "+99"
+ - CTO ordenado por fecha ascendente
 """
 
 import json
+import re
 from datetime import date, timedelta
 from collections import defaultdict
 
-
-# ─── Constantes internas ───────────────────────────────────────────────────────
-
-# Grupos raíz que nunca queremos mostrar como breadcrumb
 _SKIP_GROUP_PATTERNS = {
     'CONSTRUCCIÓN', 'CONSTRUCTION',
     'HITOS IMPORTANTES', 'CONTRATOS', 'CONTRACTS',
     'FECHA DE CORTE',
 }
-
-# Prefijo que identifica una tarea como CTO
-_CTO_PREFIX = 'CTO-'
-
-# Nombre del grupo que identifica contratos (para excluirlos)
+_CTO_PREFIX      = 'CTO-'
 _CONTRACTS_GROUP = 'CONTRATOS'
 
 
-# ─── Función principal ─────────────────────────────────────────────────────────
+def compute_delay(task_start: date, task_end: date,
+                  reference_date: date, category: str) -> str:
+    """
+    Calcula el atraso en días y retorna el string a mostrar.
+    - Atrasadas (category='delayed'): reference_date - task_end
+    - Que inician (category='starting') con delay > 0:
+          reference_date - task_start  (solo si task_start < reference_date)
+    Tope: si días >= 100 → '+99'
+    Sin símbolo '+' en valores normales.
+    Retorna '—' si no hay atraso aplicable.
+    """
+    if category == 'delayed':
+        days = (reference_date - task_end).days
+    elif category == 'starting':
+        if task_start < reference_date:
+            days = (reference_date - task_start).days
+        else:
+            return '—'
+    else:
+        return '—'
+
+    if days <= 0:
+        return '—'
+    if days >= 100:
+        return '+99'
+    return str(days)
+
 
 def process_project(source, reference_date: date = None) -> dict:
-    """
-    Procesa el JSON de un proyecto Geniebelt.
-
-    Args:
-        source: ruta a archivo .json/.txt  OR  string con el JSON  OR  dict ya parseado
-        reference_date: fecha de corte (default: hoy)
-
-    Returns dict con:
-        {
-          "project_name": str,
-          "project_id": int,
-          "overall_progress": float,         # 0.0 – 1.0
-          "reference_date": date,
-          "week_start": date,
-          "week_end": date,
-          "towers": [                         # lista ordenada de torres detectadas
-              {
-                "id": str,                   # ej. "T1"
-                "label": str,                # ej. "Torre 1" o nombre real del grupo
-                "tasks": [                   # tareas agrupadas
-                    {
-                      "name": str,
-                      "start": date,
-                      "end": date,
-                      "progress": int,       # 0–100
-                      "delay": int,          # días según Geniebelt
-                      "state": str,          # not_started / in_progress / completed
-                      "category": str,       # "starting" | "delayed"
-                      "breadcrumb": [str],   # agrupadores sin torre ni raíz
-                    }
-                ],
-                "groups": {                  # tareas indexadas por breadcrumb key
-                    "OBRA GRIS › Cubierta": [task, ...]
-                }
-              }
-          ],
-          "cto_items": [                     # hitos CTO detectados
-              {
-                "tower": str,               # "T1", "T2", etc.
-                "label": str,               # "Programación" | "Obra" | nombre completo
-                "date": date,
-                "days_from_reference": int,
-              }
-          ],
-          "kpis": {
-              "starting": int,
-              "delayed": int,
-              "in_progress": int,
-              "completed": int,
-          }
-        }
-    """
-    today = reference_date or date.today()
+    today      = reference_date or date.today()
     week_start = today - timedelta(days=today.weekday())   # lunes
-    week_end   = week_start + timedelta(days=4)            # viernes
+    week_end   = week_start + timedelta(days=5)            # sábado
 
-    # ── Cargar JSON ────────────────────────────────────────────────────────────
-    raw = _load(source)
+    raw     = _load(source)
     project = raw['project']
 
-    # ── Mapa de project_item id → nombre de grupo ─────────────────────────────
+    # Mapa project_item id → nombre de grupo
     item_to_group: dict[int, str] = {}
     for item in project['project_items']:
         if 'group' in item:
             item_to_group[item['id']] = item['group']['name'].strip()
 
-    # ── Detectar torres dinámicamente ─────────────────────────────────────────
-    # Una "torre" es un grupo cuyo padre inmediato es CONSTRUCCIÓN.
-    # Lo identificamos como el nivel 3 del path_outline (índice 2).
-    # Recorremos todos los package items para encontrar los ids de grupos torre.
-    tower_ids: dict[int, str] = {}   # item_id → nombre
+    # Detectar torres (nivel índice 2 del path_outline)
+    tower_ids: dict[int, str] = {}
     for item in project['project_items']:
         if 'package' not in item:
             continue
@@ -114,7 +76,7 @@ def process_project(source, reference_date: date = None) -> dict:
             if tid in item_to_group and tid not in tower_ids:
                 tower_ids[tid] = item_to_group[tid]
 
-    # ── Detectar nombre raíz del proyecto (nivel 0) ───────────────────────────
+    # Nombres raíz a excluir del breadcrumb
     root_names: set[str] = set()
     for item in project['project_items']:
         if 'package' not in item:
@@ -123,51 +85,38 @@ def process_project(source, reference_date: date = None) -> dict:
         if path and path[0] in item_to_group:
             root_names.add(item_to_group[path[0]])
 
-    skip_names = _SKIP_GROUP_PATTERNS | root_names
-
-    # ── Construir set de ids de grupos torre ──────────────────────────────────
+    skip_names     = _SKIP_GROUP_PATTERNS | root_names
     tower_item_ids = set(tower_ids.keys())
+    tower_labels   = {tid: tname for tid, tname in tower_ids.items()}
 
-    # ── Detectar nombres de torres (limpiar prefijos numéricos si los hay) ────
-    # Construir map: tower_item_id → label limpio
-    tower_labels: dict[int, str] = {}
-    for tid, tname in tower_ids.items():
-        tower_labels[tid] = tname  # usamos el nombre real del grupo
-
-    # ── Procesar items ─────────────────────────────────────────────────────────
-    cto_raw: list[dict] = []
-    tower_tasks: dict[int, list] = defaultdict(list)  # tower_item_id → tasks
-    seen_task_keys: set[str] = set()
+    cto_raw:    list[dict] = []
+    tower_tasks: dict[int, list] = defaultdict(list)
+    seen_keys:   set[str] = set()
 
     for item in project['project_items']:
         if 'package' not in item:
             continue
 
-        pkg   = item['package']
-        name  = pkg['name'].strip()
-        path  = item['path_outline']
+        pkg  = item['package']
+        name = pkg['name'].strip()
+        path = item['path_outline']
 
-        # ── CTO: capturar y saltar ─────────────────────────────────────────────
+        # CTO
         if name.startswith(_CTO_PREFIX):
             sd = pkg.get('start_date')
             if sd:
-                cto_raw.append({
-                    'name':  name,
-                    'start': date.fromisoformat(sd),
-                    'tower_path': path,
-                })
+                cto_raw.append({'name': name, 'start': date.fromisoformat(sd)})
             continue
 
-        # ── Excluir hitos que no sean CTO ─────────────────────────────────────
+        # Excluir hitos
         if pkg.get('milestone'):
             continue
 
-        # ── Excluir contratos ──────────────────────────────────────────────────
+        # Excluir contratos
         path_names = [item_to_group.get(pid, '') for pid in path]
         if _CONTRACTS_GROUP in path_names:
             continue
 
-        # ── Fechas y progreso ──────────────────────────────────────────────────
         sd_str = pkg.get('start_date')
         ed_str = pkg.get('end_date')
         if not sd_str or not ed_str:
@@ -179,32 +128,27 @@ def process_project(source, reference_date: date = None) -> dict:
             continue
 
         progress = float(pkg.get('progress_cache', 0))
-        delay    = int(pkg.get('delay_cache', 0) or 0)
         state    = pkg.get('work_state_cache', 'not_started')
 
-        # ── Filtro: inicia esta semana O atrasada con progreso ─────────────────
         starts_this_week = week_start <= task_start <= week_end
         is_delayed       = task_end < today and 0 < progress < 1.0
 
         if not starts_this_week and not is_delayed:
             continue
 
-        # ── Deduplicar ─────────────────────────────────────────────────────────
         dedup_key = name + sd_str
-        if dedup_key in seen_task_keys:
+        if dedup_key in seen_keys:
             continue
-        seen_task_keys.add(dedup_key)
+        seen_keys.add(dedup_key)
 
-        # ── Detectar torre ─────────────────────────────────────────────────────
         tower_id = None
         for pid in path:
             if pid in tower_item_ids:
                 tower_id = pid
                 break
         if tower_id is None:
-            continue   # tarea sin torre conocida, saltar
+            continue
 
-        # ── Breadcrumb: excluir raíz, construcción y torre ────────────────────
         breadcrumb = [
             item_to_group[pid]
             for pid in path
@@ -213,42 +157,39 @@ def process_project(source, reference_date: date = None) -> dict:
             and pid not in tower_item_ids
         ]
 
+        category = 'delayed' if is_delayed else 'starting'
+        delay_str = compute_delay(task_start, task_end, today, category)
+
         task = {
             'name':       name,
             'start':      task_start,
             'end':        task_end,
             'progress':   round(progress * 100),
-            'delay':      delay,
+            'delay_str':  delay_str,   # string listo para mostrar: "11", "+99", "—"
             'state':      state,
-            'category':   'delayed' if is_delayed else 'starting',
+            'category':   category,
             'breadcrumb': breadcrumb,
         }
         tower_tasks[tower_id].append(task)
 
-    # ── Construir CTO items ────────────────────────────────────────────────────
-    cto_items = _build_cto(cto_raw, item_to_group, tower_item_ids, tower_labels, today)
+    cto_items = _build_cto(cto_raw, tower_labels, today)
 
-    # ── Construir lista de torres ordenada ────────────────────────────────────
     towers = []
     for tid in sorted(tower_ids.keys(), key=lambda x: tower_labels.get(x, '')):
         tasks = tower_tasks.get(tid, [])
         if not tasks:
             continue
-
-        # Agrupar por breadcrumb
         groups: dict[str, list] = defaultdict(list)
         for t in tasks:
             key = ' › '.join(t['breadcrumb']) if t['breadcrumb'] else 'Sin grupo'
             groups[key].append(t)
-
         towers.append({
-            'id':     tower_labels[tid],   # nombre real como id ("T1", "Torre A", etc.)
+            'id':     tower_labels[tid],
             'label':  tower_labels[tid],
             'tasks':  tasks,
             'groups': dict(groups),
         })
 
-    # ── KPIs ──────────────────────────────────────────────────────────────────
     all_tasks = [t for tw in towers for t in tw['tasks']]
     kpis = {
         'starting':    sum(1 for t in all_tasks if t['category'] == 'starting'),
@@ -270,51 +211,35 @@ def process_project(source, reference_date: date = None) -> dict:
     }
 
 
-# ─── Helpers ───────────────────────────────────────────────────────────────────
-
 def _load(source) -> dict:
     if isinstance(source, dict):
         return source
     if isinstance(source, str):
-        # ¿es ruta o JSON string?
-        stripped = source.strip()
-        if stripped.startswith('{'):
-            return json.loads(stripped)
+        s = source.strip()
+        if s.startswith('{'):
+            return json.loads(s)
         with open(source, encoding='utf-8') as f:
             return json.load(f)
-    # file-like object (ej. uploaded file de Streamlit)
     return json.load(source)
 
 
-def _build_cto(cto_raw, item_to_group, tower_item_ids, tower_labels, today) -> list:
-    """Estructura los items CTO por torre y tipo."""
-    import re
-
-    # Construir set de nombres de torre conocidos para matching
+def _build_cto(cto_raw, tower_labels, today) -> list:
     tower_names = set(tower_labels.values())
-
     result = []
     for c in cto_raw:
-        name = c['name']  # ej. "CTO-T1 Certificado Técnico de Ocupación Programación"
+        name   = c['name']
+        suffix = name[len(_CTO_PREFIX):]
 
-        # 1. Intentar extraer torre desde el nombre: buscar patrón CTO-XXXX
-        #    donde XXXX puede ser T1, T2, Torre A, etc.
         tower_label = None
-        suffix = name[len(_CTO_PREFIX):]   # "T1 Certificado Técnico..."
-
-        # Buscar si algún nombre de torre conocido aparece al inicio del suffix
-        for tname in sorted(tower_names, key=len, reverse=True):  # más largo primero
+        for tname in sorted(tower_names, key=len, reverse=True):
             if suffix.startswith(tname):
                 tower_label = tname
                 break
-
-        # Fallback: tomar primera "palabra(s)" antes del primer espacio+mayúscula larga
         if not tower_label:
             m = re.match(r'^(\S+)', suffix)
             if m:
                 tower_label = m.group(1)
 
-        # 2. Detectar tipo: Programación / Obra / otro
         name_lower = name.lower()
         if 'programación' in name_lower or 'programacion' in name_lower:
             tipo = 'Programación'
@@ -324,7 +249,6 @@ def _build_cto(cto_raw, item_to_group, tower_item_ids, tower_labels, today) -> l
             tipo = suffix.replace(tower_label or '', '').strip()
 
         days_diff = (c['start'] - today).days
-
         result.append({
             'tower':               tower_label or '?',
             'label':               tipo,
@@ -332,37 +256,23 @@ def _build_cto(cto_raw, item_to_group, tower_item_ids, tower_labels, today) -> l
             'days_from_reference': days_diff,
         })
 
-    # Ordenar por torre y luego por fecha
-    result.sort(key=lambda x: (x['tower'], x['date']))
+    # Ordenar por fecha ascendente (punto 4)
+    result.sort(key=lambda x: x['date'])
     return result
 
-
-
-
-# ─── Test rápido ───────────────────────────────────────────────────────────────
 
 if __name__ == '__main__':
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/user-data/uploads/Projecto.txt'
     ref  = date(2026, 2, 23)
-
     data = process_project(path, reference_date=ref)
-
-    print(f"Proyecto : {data['project_name']} (id: {data['project_id']})")
-    print(f"Avance   : {data['overall_progress']*100:.1f}%")
+    print(f"Proyecto : {data['project_name']}")
     print(f"Semana   : {data['week_start']} → {data['week_end']}")
     print(f"Torres   : {[t['id'] for t in data['towers']]}")
-    print()
     for tw in data['towers']:
-        nd = sum(1 for t in tw['tasks'] if t['category']=='delayed')
-        ns = sum(1 for t in tw['tasks'] if t['category']=='starting')
-        print(f"  {tw['id']:6}  {len(tw['tasks']):3} tareas  |  {ns} programadas  |  {nd} atrasadas")
-        for grp, tasks in tw['groups'].items():
-            print(f"    [{grp}]  → {len(tasks)} tareas")
-    print()
-    print(f"CTO items: {len(data['cto_items'])}")
+        print(f"\n  {tw['id']} — {len(tw['tasks'])} tareas")
+        for t in tw['tasks'][:3]:
+            print(f"    {t['name'][:50]:50} delay={t['delay_str']:4} cat={t['category']}")
+    print(f"\nCTO (ordenados por fecha):")
     for c in data['cto_items']:
-        sign = '+' if c['days_from_reference'] >= 0 else ''
-        print(f"  {c['tower']:4} {c['label']:15} {str(c['date'])}  ({sign}{c['days_from_reference']}d)")
-    print()
-    print(f"KPIs: {data['kpis']}")
+        print(f"  {c['date']}  {c['tower']:4}  {c['label']}")
