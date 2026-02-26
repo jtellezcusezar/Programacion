@@ -85,13 +85,13 @@ body{font-family:'Inter',sans-serif;background:#fff;color:var(--txt);
              margin-top:6px;display:inline-block;user-select:none}
 .cto-cbox{display:none;margin-top:5px}
 .cto-cbox textarea{
-  width:100%;height:24px;min-height:24px;resize:none;
-  font-size:10px;font-family:'Inter',sans-serif;
+  width:100%;min-height:26px;height:26px;resize:none;overflow:hidden;
+  font-size:10px;font-family:'Inter',sans-serif;line-height:1.4;
   border:1px solid #ddd6fe;border-radius:4px;
   padding:3px 6px;color:var(--txt);background:#faf5ff;
-  outline:none;overflow:hidden;
+  outline:none;box-sizing:border-box;
 }
-.cto-cbox textarea:focus{border-color:var(--pur);overflow:auto}
+.cto-cbox textarea:focus{border-color:var(--pur)}
 
 /* ── KPI ── */
 .kpi-row{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:14px}
@@ -187,15 +187,15 @@ td.tday{background:#eff6ff!important}
 .bv-sl  .bbg{background:var(--sl-bg)}.bv-sl .bpg{background:var(--sl);opacity:.25}.bv-sl .btx{color:var(--sl)}
 
 /* COMMENT CELL */
-td.comment-td{width:140px;min-width:140px;padding:3px 4px;vertical-align:middle}
+td.comment-td{width:140px;min-width:140px;padding:3px 4px;vertical-align:top}
 td.comment-td textarea{
-  width:132px;height:22px;min-height:22px;
-  resize:none;overflow:hidden;
-  font-size:10px;font-family:'Inter',sans-serif;
+  width:132px;min-height:26px;resize:none;overflow:hidden;
+  font-size:10px;font-family:'Inter',sans-serif;line-height:1.4;
   border:1px solid var(--bor);border-radius:3px;
-  padding:3px 5px;color:var(--txt);background:#fafafa;outline:none;
+  padding:3px 5px;color:var(--txt);background:#fafafa;
+  outline:none;box-sizing:border-box;display:block;
 }
-td.comment-td textarea:focus{border-color:var(--blue);background:#fff;overflow:auto}
+td.comment-td textarea:focus{border-color:var(--blue);background:#fff}
 
 hr.sep{border:none;border-top:1px solid var(--bor);margin:12px 0}
 
@@ -205,15 +205,12 @@ hr.sep{border:none;border-top:1px solid var(--bor);margin:12px 0}
   body{padding:8px;font-size:9px;max-width:100%}
   .tw-wrap{page-break-inside:avoid}
   .proj-block + .proj-block{page-break-before:always}
-  /* Expandir textareas en PDF */
   td.comment-td textarea{
-    height:auto!important;min-height:22px;
     overflow:visible!important;white-space:pre-wrap;word-break:break-word;
     border:1px solid #ccc;background:#fff;
   }
   .cto-cbox{display:block!important}
   .cto-cbox textarea{
-    height:auto!important;min-height:22px;
     overflow:visible!important;white-space:pre-wrap;
     border:1px solid #ccc;background:#fff;
   }
@@ -567,6 +564,21 @@ def _task_row(task, days, today_str, gid):
 
 def _scripts() -> str:
     return """<script>
+// ── Auto-grow para todos los textareas ──────────────────────────────────────
+function autoGrow(el) {
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+
+// Inicializar y vincular todos los textareas al cargar
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('textarea').forEach(function(ta) {
+    ta.addEventListener('input', function(){ autoGrow(this); });
+    autoGrow(ta);
+  });
+});
+
+// ── Filtro global ────────────────────────────────────────────────────────────
 function filterTasks(input) {
   const q = input.value.toLowerCase().trim();
   document.querySelectorAll('tr.tr').forEach(row => {
@@ -581,13 +593,18 @@ function filterTasks(input) {
   });
 }
 
+// ── Toggle comentario CTO ────────────────────────────────────────────────────
 function toggleCto(uid) {
   const box = document.getElementById(uid);
   const tog = box.previousElementSibling;
   const open = box.style.display === 'block';
   box.style.display = open ? 'none' : 'block';
   tog.textContent   = open ? '＋ Comentario' : '－ Ocultar';
-  if (!open) box.querySelector('textarea').focus();
+  if (!open) {
+    const ta = box.querySelector('textarea');
+    ta.focus();
+    autoGrow(ta);
+  }
 }
 </script>"""
 
