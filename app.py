@@ -27,7 +27,8 @@ st.set_page_config(
 st.markdown("""
 <style>
   #MainMenu{visibility:hidden} footer{visibility:hidden}
-  .block-container{padding-top:1.5rem;padding-bottom:1rem}
+  header[data-testid="stHeader"]{background:transparent}
+  .block-container{padding-top:3.5rem;padding-bottom:1rem}
   .app-title{font-size:22px;font-weight:700;color:#1e293b;margin-bottom:2px}
   .app-sub  {font-size:13px;color:#64748b;margin-bottom:20px}
   .file-card{background:#f0fdf4;border:1px solid #bbf7d0;
