@@ -1,39 +1,33 @@
 """
-processor.py  v2
-================
-Cambios vs v1:
- - Semana lunes→sábado (6 días)
- - Cálculo de atraso propio: fecha_corte - fecha_fin (atrasadas)
-                              fecha_corte - fecha_inicio (que inician con atraso)
- - Tope de atraso: si >= 100 → mostrar como "+99"
- - CTO ordenado por fecha ascendente
+processor.py  v3
+- Completadas → delay_str siempre '—'
+- Semana lun–sáb
+- Atraso dinámico por fecha de corte
 """
 
-import json
-import re
+import json, re
 from datetime import date, timedelta
 from collections import defaultdict
 
 _SKIP_GROUP_PATTERNS = {
-    'CONSTRUCCIÓN', 'CONSTRUCTION',
-    'HITOS IMPORTANTES', 'CONTRATOS', 'CONTRACTS',
-    'FECHA DE CORTE',
+    'CONSTRUCCIÓN','CONSTRUCTION','HITOS IMPORTANTES',
+    'CONTRATOS','CONTRACTS','FECHA DE CORTE',
 }
 _CTO_PREFIX      = 'CTO-'
 _CONTRACTS_GROUP = 'CONTRATOS'
 
 
 def compute_delay(task_start: date, task_end: date,
-                  reference_date: date, category: str) -> str:
+                  reference_date: date, category: str, state: str) -> str:
     """
-    Calcula el atraso en días y retorna el string a mostrar.
-    - Atrasadas (category='delayed'): reference_date - task_end
-    - Que inician (category='starting') con delay > 0:
-          reference_date - task_start  (solo si task_start < reference_date)
-    Tope: si días >= 100 → '+99'
-    Sin símbolo '+' en valores normales.
-    Retorna '—' si no hay atraso aplicable.
+    Reglas:
+    - completed → siempre '—'
+    - delayed   → reference_date - task_end
+    - starting  → reference_date - task_start (solo si task_start < reference_date)
+    Tope >= 100 → '+99'. Sin '+' en valores normales.
     """
+    if state == 'completed':
+        return '—'
     if category == 'delayed':
         days = (reference_date - task_end).days
     elif category == 'starting':
@@ -46,26 +40,22 @@ def compute_delay(task_start: date, task_end: date,
 
     if days <= 0:
         return '—'
-    if days >= 100:
-        return '+99'
-    return str(days)
+    return '+99' if days >= 100 else str(days)
 
 
 def process_project(source, reference_date: date = None) -> dict:
     today      = reference_date or date.today()
-    week_start = today - timedelta(days=today.weekday())   # lunes
-    week_end   = week_start + timedelta(days=5)            # sábado
+    week_start = today - timedelta(days=today.weekday())
+    week_end   = week_start + timedelta(days=5)   # sábado
 
     raw     = _load(source)
     project = raw['project']
 
-    # Mapa project_item id → nombre de grupo
     item_to_group: dict[int, str] = {}
     for item in project['project_items']:
         if 'group' in item:
             item_to_group[item['id']] = item['group']['name'].strip()
 
-    # Detectar torres (nivel índice 2 del path_outline)
     tower_ids: dict[int, str] = {}
     for item in project['project_items']:
         if 'package' not in item:
@@ -76,7 +66,6 @@ def process_project(source, reference_date: date = None) -> dict:
             if tid in item_to_group and tid not in tower_ids:
                 tower_ids[tid] = item_to_group[tid]
 
-    # Nombres raíz a excluir del breadcrumb
     root_names: set[str] = set()
     for item in project['project_items']:
         if 'package' not in item:
@@ -87,32 +76,28 @@ def process_project(source, reference_date: date = None) -> dict:
 
     skip_names     = _SKIP_GROUP_PATTERNS | root_names
     tower_item_ids = set(tower_ids.keys())
-    tower_labels   = {tid: tname for tid, tname in tower_ids.items()}
+    tower_labels   = dict(tower_ids)
 
-    cto_raw:    list[dict] = []
+    cto_raw:     list[dict] = []
     tower_tasks: dict[int, list] = defaultdict(list)
     seen_keys:   set[str] = set()
 
     for item in project['project_items']:
         if 'package' not in item:
             continue
-
         pkg  = item['package']
         name = pkg['name'].strip()
         path = item['path_outline']
 
-        # CTO
         if name.startswith(_CTO_PREFIX):
             sd = pkg.get('start_date')
             if sd:
                 cto_raw.append({'name': name, 'start': date.fromisoformat(sd)})
             continue
 
-        # Excluir hitos
         if pkg.get('milestone'):
             continue
 
-        # Excluir contratos
         path_names = [item_to_group.get(pid, '') for pid in path]
         if _CONTRACTS_GROUP in path_names:
             continue
@@ -157,22 +142,21 @@ def process_project(source, reference_date: date = None) -> dict:
             and pid not in tower_item_ids
         ]
 
-        category = 'delayed' if is_delayed else 'starting'
-        delay_str = compute_delay(task_start, task_end, today, category)
+        category  = 'delayed' if is_delayed else 'starting'
+        delay_str = compute_delay(task_start, task_end, today, category, state)
 
-        task = {
+        tower_tasks[tower_id].append({
             'name':       name,
             'start':      task_start,
             'end':        task_end,
             'progress':   round(progress * 100),
-            'delay_str':  delay_str,   # string listo para mostrar: "11", "+99", "—"
+            'delay_str':  delay_str,
             'state':      state,
             'category':   category,
             'breadcrumb': breadcrumb,
-        }
-        tower_tasks[tower_id].append(task)
+        })
 
-    cto_items = _build_cto(cto_raw, tower_labels, today)
+    cto_items = _build_cto(cto_raw, tower_labels)
 
     towers = []
     for tid in sorted(tower_ids.keys(), key=lambda x: tower_labels.get(x, '')):
@@ -223,13 +207,12 @@ def _load(source) -> dict:
     return json.load(source)
 
 
-def _build_cto(cto_raw, tower_labels, today) -> list:
+def _build_cto(cto_raw, tower_labels) -> list:
     tower_names = set(tower_labels.values())
     result = []
     for c in cto_raw:
         name   = c['name']
         suffix = name[len(_CTO_PREFIX):]
-
         tower_label = None
         for tname in sorted(tower_names, key=len, reverse=True):
             if suffix.startswith(tname):
@@ -239,7 +222,6 @@ def _build_cto(cto_raw, tower_labels, today) -> list:
             m = re.match(r'^(\S+)', suffix)
             if m:
                 tower_label = m.group(1)
-
         name_lower = name.lower()
         if 'programación' in name_lower or 'programacion' in name_lower:
             tipo = 'Programación'
@@ -247,16 +229,11 @@ def _build_cto(cto_raw, tower_labels, today) -> list:
             tipo = 'Obra'
         else:
             tipo = suffix.replace(tower_label or '', '').strip()
-
-        days_diff = (c['start'] - today).days
         result.append({
-            'tower':               tower_label or '?',
-            'label':               tipo,
-            'date':                c['start'],
-            'days_from_reference': days_diff,
+            'tower': tower_label or '?',
+            'label': tipo,
+            'date':  c['start'],
         })
-
-    # Ordenar por fecha ascendente (punto 4)
     result.sort(key=lambda x: x['date'])
     return result
 
@@ -264,15 +241,9 @@ def _build_cto(cto_raw, tower_labels, today) -> list:
 if __name__ == '__main__':
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/user-data/uploads/Projecto.txt'
-    ref  = date(2026, 2, 23)
-    data = process_project(path, reference_date=ref)
-    print(f"Proyecto : {data['project_name']}")
-    print(f"Semana   : {data['week_start']} → {data['week_end']}")
-    print(f"Torres   : {[t['id'] for t in data['towers']]}")
-    for tw in data['towers']:
-        print(f"\n  {tw['id']} — {len(tw['tasks'])} tareas")
-        for t in tw['tasks'][:3]:
-            print(f"    {t['name'][:50]:50} delay={t['delay_str']:4} cat={t['category']}")
-    print(f"\nCTO (ordenados por fecha):")
-    for c in data['cto_items']:
-        print(f"  {c['date']}  {c['tower']:4}  {c['label']}")
+    data = process_project(path, reference_date=date(2026, 2, 23))
+    print(f"OK: {data['project_name']} | {len(data['towers'])} torres | CTO: {len(data['cto_items'])}")
+    for t in data['towers']:
+        completed = [x for x in t['tasks'] if x['state']=='completed']
+        for c in completed[:2]:
+            print(f"  COMPLETADA: {c['name'][:40]} → delay={c['delay_str']}")
