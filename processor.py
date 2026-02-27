@@ -400,6 +400,11 @@ def compute_critical_path(project: dict) -> set:
                 succs_map[pre].append(pid)
 
     def get_dur(pkg):
+        # Usar days_cache (duración laboral calculada por Geniebelt)
+        # o work_duration como fallback, luego días calendario
+        d = pkg.get('days_cache') or pkg.get('work_duration')
+        if d and int(d) > 0:
+            return int(d)
         try:
             s = date.fromisoformat(pkg['start_date'])
             e = date.fromisoformat(pkg['end_date'])
