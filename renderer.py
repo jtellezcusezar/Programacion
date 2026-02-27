@@ -160,6 +160,31 @@ th{padding:5px 7px;font-size:9px;font-weight:600;text-transform:uppercase;
 th.dc{text-align:center}
 th.today-th{color:var(--blue)}
 th.comment-th{width:30px;min-width:30px;text-align:center}
+th.dep-th{width:24px;min-width:24px;text-align:center}
+
+/* DEP POPOVER */
+td.dep-td{width:24px;min-width:24px;text-align:center;padding:2px 2px;vertical-align:middle}
+.dep-btn{background:none;border:none;font-size:11px;cursor:pointer;
+          color:#94a3b8;line-height:1;padding:1px 3px;border-radius:3px}
+.dep-btn:hover{color:var(--pur);background:#faf5ff}
+.dep-btn.active{color:var(--pur)}
+.dep-popover{
+  position:fixed;z-index:999;
+  background:#fff;border:1px solid #ddd6fe;border-radius:8px;
+  padding:10px 13px;min-width:220px;max-width:320px;
+  box-shadow:0 8px 24px rgba(0,0,0,.12);
+  font-size:10.5px;line-height:1.5;
+  display:none;
+}
+.dep-popover.visible{display:block}
+.dep-popover-title{font-size:9px;font-weight:700;text-transform:uppercase;
+                    letter-spacing:.5px;color:var(--pur);margin-bottom:6px}
+.dep-section{margin-bottom:6px}
+.dep-section:last-child{margin-bottom:0}
+.dep-label{font-size:9px;font-weight:600;color:var(--mut);margin-bottom:3px}
+.dep-item{padding:2px 0;color:var(--txt);display:flex;gap:5px;align-items:flex-start}
+.dep-item .dep-arrow{flex-shrink:0;color:var(--pur)}
+.dep-none{color:#94a3b8;font-style:italic;font-size:10px}
 
 /* GROUP ROW */
 tr.gr td{
@@ -178,7 +203,7 @@ tr.tr td{padding:4px 7px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
 tr.tr:last-child td{border-bottom:none}
 tr.tr:hover td{background:#fafafa}
 tr.tr.ht{display:none}
-.tn{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px}
+.tn{font-weight:500;white-space:normal;word-break:break-word;max-width:190px;line-height:1.35}
 
 /* PILL */
 .pill{display:inline-block;font-size:8.5px;font-weight:700;
@@ -527,6 +552,7 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
           <th style="text-align:center;white-space:nowrap">Ini.</th>
           <th style="text-align:center;white-space:nowrap">Fin</th>
           {day_ths}
+          <th class="dep-th" title="Dependencias">🔗</th>
           <th class="comment-th" title="Comentarios">💬</th>
         </tr></thead>
         <tbody>{body}</tbody>
@@ -547,7 +573,7 @@ def _table_body(groups, gantt_cols, gantt_meta, today_str, is_range, tw_idx):
     for gi, (crumb_key, tasks) in enumerate(groups.items()):
         parts      = crumb_key.split(" › ")
         crumb_html = '<span class="cs">›</span>'.join(f"<span>{p}</span>" for p in parts)
-        n_cols     = 6 + len(gantt_cols)
+        n_cols     = 7 + len(gantt_cols)
         gid        = f"g_{tw_idx}_{gi}"
 
         if inner_collapsible:
@@ -649,24 +675,45 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
     el = f"{te.month:02d}/{te.day:02d}"
     name_safe = task['name'].replace('"', '&quot;')
 
+    import json as _json
+    preds    = task.get('predecessors', [])
+    succs    = task.get('successors',   [])
+    has_deps = bool(preds or succs)
+    dep_icon = '\U0001f517' if has_deps else '\xb7'
+    dep_clr  = 'color:var(--pur)' if has_deps else 'color:#e2e8f0'
+    preds_js = _json.dumps(preds, ensure_ascii=False).replace("'", "\\'")
+    succs_js = _json.dumps(succs, ensure_ascii=False).replace("'", "\\'")
+    tname    = task["name"]
+    tname_lc = tname.lower()
+
+    dep_cell = (
+        '<td class="dep-td">'
+        '<button class="dep-btn" style="' + dep_clr + '" '
+        'onclick="toggleDepPopover(this,\'' + preds_js + '\',\'' + succs_js + '\')" '
+        'title="Ver dependencias">' + dep_icon + '</button>'
+        '</td>'
+    )
+    mono = "font-family:'JetBrains Mono',monospace;font-size:9px;color:#475569;text-align:center"
     return (
-        f'<tr class="tr" id="{task_id}" data-name="{task["name"].lower()}" data-grp="{gid}">'
-        f'<td><div class="tn" title="{name_safe}">{task["name"]}</div></td>'
-        f'<td>{pill}</td>'
-        f'<td style="text-align:center">{delay_cell}</td>'
-        f'<td style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#475569;text-align:center">{sl}</td>'
-        f'<td style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:#475569;text-align:center">{el}</td>'
-        f'{gantt}'
-        f'<td class="comment-td">'
-        f'<button class="cmt-btn" id="btn_{comment_id}" '
-        f'onclick="toggleComment(\'{comment_id}\')" title="Agregar comentario">💬</button>'
-        f'</td>'
-        f'</tr>'
+        '<tr class="tr" id="' + task_id + '" data-name="' + tname_lc + '" data-grp="' + gid + '">'
+        '<td><div class="tn">' + tname + '</div></td>'
+        + dep_cell +
+        '<td>' + pill + '</td>'
+        '<td style="text-align:center">' + delay_cell + '</td>'
+        '<td style="' + mono + '">' + sl + '</td>'
+        '<td style="' + mono + '">' + el + '</td>'
+        + gantt +
+        '<td class="comment-td">'
+        '<button class="cmt-btn" id="btn_' + comment_id + '" '
+        'onclick="toggleComment(\'' + comment_id + '\')" title="Agregar comentario">\U0001f4ac</button>'
+        '</td>'
+        '</tr>'
     )
 
 
+
 def _comment_row(comment_id, n_day_cols):
-    n_cols = 6 + n_day_cols
+    n_cols = 7 + n_day_cols
     return (
         f'<tr class="comment-row hidden" id="{comment_id}">'
         f'<td colspan="{n_cols}">'
@@ -799,19 +846,33 @@ function onFilterInput(input) {{
 }}
 
 function applyFilter(q) {{
+  // 1. Mostrar/ocultar tareas
   document.querySelectorAll('tr.tr').forEach(row => {{
     const match = !q || (row.getAttribute('data-name') || '').includes(q);
     row.classList.toggle('ht', !match);
-    // sync comment row
     const cid = row.id.replace('t_','cm_');
     const cr  = document.getElementById(cid);
     if (cr && !match) cr.style.display = 'none';
+    else if (cr && match && !cr.classList.contains('hidden')) cr.style.display = '';
   }});
+  // 2. Ocultar agrupadores internos sin tareas visibles
   document.querySelectorAll('tr.gr').forEach(grp => {{
     if (!grp.id) return;
     const any = Array.from(document.querySelectorAll(`tr.tr[data-grp="${{grp.id}}"]`))
                      .some(r => !r.classList.contains('ht'));
     grp.classList.toggle('hg', !any);
+  }});
+  // 3. Ocultar torres sin tareas visibles
+  document.querySelectorAll('.tw-wrap').forEach(tw => {{
+    const anyVisible = Array.from(tw.querySelectorAll('tr.tr'))
+                           .some(r => !r.classList.contains('ht'));
+    tw.style.display = anyVisible ? '' : 'none';
+  }});
+  // 4. Ocultar bloques de proyecto sin torres visibles
+  document.querySelectorAll('.proj-block').forEach(pb => {{
+    const anyVisible = Array.from(pb.querySelectorAll('.tw-wrap'))
+                           .some(tw => tw.style.display !== 'none');
+    pb.style.display = anyVisible ? '' : 'none';
   }});
 }}
 
@@ -853,7 +914,58 @@ function highlightAC(items) {{
 
 document.addEventListener('click', e => {{
   if (!e.target.closest('.filter-wrap')) dd.style.display='none';
+  if (!e.target.closest('.dep-btn') && !e.target.closest('.dep-popover')) {{
+    document.querySelectorAll('.dep-popover.visible').forEach(p => p.classList.remove('visible'));
+  }}
 }});
+
+// ── Dependency popover ────────────────────────────────────────────────────
+const _popover = (() => {{
+  const el = document.createElement('div');
+  el.className = 'dep-popover';
+  document.body.appendChild(el);
+  return el;
+}})();
+
+function toggleDepPopover(btn, predsJson, succsJson) {{
+  const preds = JSON.parse(predsJson);
+  const succs = JSON.parse(succsJson);
+  const isVisible = btn.classList.contains('active');
+
+  // Close any open popover
+  document.querySelectorAll('.dep-btn.active').forEach(b => b.classList.remove('active'));
+  _popover.classList.remove('visible');
+
+  if (isVisible) return;
+
+  // Build content
+  let html = '<div class="dep-popover-title">🔗 Dependencias</div>';
+  html += '<div class="dep-section">';
+  html += '<div class="dep-label">⬅ Predecesoras</div>';
+  if (preds.length) {{
+    preds.forEach(p => html += `<div class="dep-item"><span class="dep-arrow">←</span><span>${{p}}</span></div>`);
+  }} else {{
+    html += '<div class="dep-none">Sin predecesoras</div>';
+  }}
+  html += '</div><div class="dep-section">';
+  html += '<div class="dep-label">➡ Sucesoras</div>';
+  if (succs.length) {{
+    succs.forEach(s => html += `<div class="dep-item"><span class="dep-arrow">→</span><span>${{s}}</span></div>`);
+  }} else {{
+    html += '<div class="dep-none">Sin sucesoras</div>';
+  }}
+  html += '</div>';
+  _popover.innerHTML = html;
+
+  // Position near button
+  const rect = btn.getBoundingClientRect();
+  const top  = rect.bottom + window.scrollY + 4;
+  const left = Math.min(rect.left + window.scrollX, window.innerWidth - 330);
+  _popover.style.top  = top + 'px';
+  _popover.style.left = left + 'px';
+  _popover.classList.add('visible');
+  btn.classList.add('active');
+}}
 
 // ── Signatures toggle ────────────────────────────────────────────────────
 function toggleSigSection() {{
