@@ -376,12 +376,14 @@ def _build_cto(cto_raw, tower_labels) -> list:
 
 def compute_critical_path(project: dict) -> set:
     """
-    Calcula la ruta crítica del proyecto usando CPM por componente conectado.
-    Retorna un set de package_ids que pertenecen a la ruta crítica (holgura total = 0).
+    Calcula la ruta crítica usando CPM por componente conectado.
+    - Usa fechas programadas reales como ancla del forward pass
+    - Usa days_cache / work_duration como duración laboral
+    - Incluye lag_days de cada dependencia
+    - Holgura total <= 0 → ruta crítica
     """
     from collections import defaultdict, deque
 
-    # Construir mapa completo de todos los packages con fechas
     pkgs = {}
     for item in project['project_items']:
         if 'package' in item:
@@ -389,19 +391,19 @@ def compute_critical_path(project: dict) -> set:
             if pkg.get('start_date') and pkg.get('end_date'):
                 pkgs[pkg['id']] = pkg
 
-    # Grafo de dependencias
-    preds_map = defaultdict(list)
-    succs_map = defaultdict(list)
-    for pid, pkg in pkgs.items():
-        for dep in (pkg.get('dependencies') or []):
-            pre = dep.get('prerequisite_id')
-            if pre and pre in pkgs:
-                preds_map[pid].append(pre)
-                succs_map[pre].append(pid)
+    # Fecha base para convertir fechas a números de día
+    try:
+        proj_start = date.fromisoformat(project['start_date'])
+    except Exception:
+        proj_start = min(
+            date.fromisoformat(pkg['start_date'])
+            for pkg in pkgs.values()
+        )
 
-    def get_dur(pkg):
-        # Usar days_cache (duración laboral calculada por Geniebelt)
-        # o work_duration como fallback, luego días calendario
+    def to_days(d_str):
+        return (date.fromisoformat(d_str) - proj_start).days
+
+    def work_dur(pkg):
         d = pkg.get('days_cache') or pkg.get('work_duration')
         if d and int(d) > 0:
             return int(d)
@@ -412,12 +414,23 @@ def compute_critical_path(project: dict) -> set:
         except Exception:
             return 1
 
-    # Encontrar componentes conectados (grafo no dirigido)
+    # Grafo con lag_days
+    preds_map = defaultdict(list)   # pid -> [(prereq_id, lag)]
+    succs_map = defaultdict(list)   # pid -> [(succ_id, lag)]
+    for pid, pkg in pkgs.items():
+        for dep in (pkg.get('dependencies') or []):
+            pre   = dep.get('prerequisite_id')
+            lag   = int(dep.get('delay_days') or 0)
+            if pre and pre in pkgs:
+                preds_map[pid].append((pre, lag))
+                succs_map[pre].append((pid, lag))
+
+    # Componentes conectados
     visited = set()
     components = []
     adj = defaultdict(set)
     for pid in pkgs:
-        for pre in preds_map[pid]:
+        for pre, _ in preds_map[pid]:
             adj[pid].add(pre)
             adj[pre].add(pid)
 
@@ -433,17 +446,15 @@ def compute_critical_path(project: dict) -> set:
             visited.add(n)
             comp.append(n)
             stack.extend(adj[n] - visited)
-        if len(comp) > 1:   # solo cadenas con dependencias reales
+        if len(comp) > 1:
             components.append(comp)
 
-    # CPM por componente
     critical = set()
+
     for comp in components:
         comp_set = set(comp)
-
-        # Orden topológico dentro del componente
         in_deg = {
-            pid: sum(1 for p in preds_map[pid] if p in comp_set)
+            pid: sum(1 for p, _ in preds_map[pid] if p in comp_set)
             for pid in comp
         }
         queue = deque(pid for pid in comp if in_deg[pid] == 0)
@@ -451,25 +462,26 @@ def compute_critical_path(project: dict) -> set:
         while queue:
             n = queue.popleft()
             topo.append(n)
-            for s in succs_map[n]:
+            for s, _ in succs_map[n]:
                 if s in comp_set:
                     in_deg[s] -= 1
                     if in_deg[s] == 0:
                         queue.append(s)
-
         if not topo:
             continue
 
-        # Forward pass
+        # Forward pass — ancla en fecha programada
         ES = {}
         EF = {}
         for pid in topo:
-            es = max(
-                (EF[p] for p in preds_map[pid] if p in comp_set and p in EF),
-                default=0
+            pkg = pkgs[pid]
+            sched_start = to_days(pkg['start_date'])
+            pred_ef = max(
+                (EF[p] + lag for p, lag in preds_map[pid] if p in comp_set and p in EF),
+                default=sched_start
             )
-            ES[pid] = es
-            EF[pid] = es + get_dur(pkgs[pid])
+            ES[pid] = max(sched_start, pred_ef)
+            EF[pid] = ES[pid] + work_dur(pkg)
 
         comp_end = max(EF.values())
 
@@ -477,14 +489,13 @@ def compute_critical_path(project: dict) -> set:
         LS = {}
         LF = {}
         for pid in reversed(topo):
-            lf = min(
-                (LS[s] for s in succs_map[pid] if s in comp_set and s in LS),
+            succ_ls = min(
+                (LS[s] - lag for s, lag in succs_map[pid] if s in comp_set and s in LS),
                 default=comp_end
             )
-            LF[pid] = lf
-            LS[pid] = lf - get_dur(pkgs[pid])
+            LF[pid] = min(comp_end, succ_ls)
+            LS[pid] = LF[pid] - work_dur(pkgs[pid])
 
-        # Holgura total = 0 → ruta crítica
         for pid in comp:
             tf = LS.get(pid, 0) - ES.get(pid, 0)
             if tf <= 0:
