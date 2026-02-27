@@ -681,15 +681,20 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
     has_deps = bool(preds or succs)
     dep_icon = '\U0001f517' if has_deps else '\xb7'
     dep_clr  = 'color:var(--pur)' if has_deps else 'color:#e2e8f0'
-    preds_js = _json.dumps(preds, ensure_ascii=False).replace("'", "\\'")
-    succs_js = _json.dumps(succs, ensure_ascii=False).replace("'", "\\'")
+
     tname    = task["name"]
     tname_lc = tname.lower()
 
+    # Encode as base64 to avoid any quoting issues with special chars in names
+    import base64 as _b64
+    preds_b64 = _b64.b64encode(_json.dumps(preds, ensure_ascii=False).encode()).decode()
+    succs_b64 = _b64.b64encode(_json.dumps(succs, ensure_ascii=False).encode()).decode()
     dep_cell = (
         '<td class="dep-td">'
         '<button class="dep-btn" style="' + dep_clr + '" '
-        'onclick="toggleDepPopover(this,\'' + preds_js + '\',\'' + succs_js + '\')" '
+        'data-preds="' + preds_b64 + '" '
+        'data-succs="' + succs_b64 + '" '
+        'onclick="toggleDepPopover(this)" '
         'title="Ver dependencias">' + dep_icon + '</button>'
         '</td>'
     )
@@ -927,9 +932,9 @@ const _popover = (() => {{
   return el;
 }})();
 
-function toggleDepPopover(btn, predsJson, succsJson) {{
-  const preds = JSON.parse(predsJson);
-  const succs = JSON.parse(succsJson);
+function toggleDepPopover(btn) {{
+  const preds = JSON.parse(atob(btn.getAttribute('data-preds') || 'W10='));
+  const succs = JSON.parse(atob(btn.getAttribute('data-succs') || 'W10='));
   const isVisible = btn.classList.contains('active');
 
   // Close any open popover
