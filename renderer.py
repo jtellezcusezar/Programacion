@@ -164,10 +164,12 @@ th.dep-th{width:24px;min-width:24px;text-align:center}
 
 /* DEP POPOVER */
 td.dep-td{width:24px;min-width:24px;text-align:center;padding:2px 2px;vertical-align:middle}
-.dep-btn{background:none;border:none;font-size:11px;cursor:pointer;
-          color:#94a3b8;line-height:1;padding:1px 3px;border-radius:3px}
-.dep-btn:hover{color:var(--pur);background:#faf5ff}
-.dep-btn.active{color:var(--pur)}
+.dep-btn{
+  font-size:12px;cursor:default;line-height:1;
+  padding:2px 3px;border-radius:3px;display:inline-block;
+  transition:transform .1s;
+}
+.dep-btn:hover{transform:scale(1.2);filter:brightness(0.85)}
 .dep-popover{
   position:fixed;z-index:999;
   background:#fff;border:1px solid #ddd6fe;border-radius:8px;
@@ -709,15 +711,19 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
     import base64 as _b64
     preds_b64 = _b64.b64encode(_json.dumps(preds, ensure_ascii=False).encode()).decode()
     succs_b64 = _b64.b64encode(_json.dumps(succs, ensure_ascii=False).encode()).decode()
-    dep_cell = (
-        '<td class="dep-td">'
-        '<button class="dep-btn" style="' + dep_clr + '" '
-        'data-preds="' + preds_b64 + '" '
-        'data-succs="' + succs_b64 + '" '
-        'onclick="toggleDepPopover(this)" '
-        'title="Ver dependencias">' + dep_icon + '</button>'
-        '</td>'
-    )
+    if has_deps:
+        dep_cell = (
+            '<td class="dep-td">'
+            '<span class="dep-btn" '
+            'data-preds="' + preds_b64 + '" '
+            'data-succs="' + succs_b64 + '" '
+            'onmouseenter="showDepPopover(this)" '
+            'onmouseleave="hideDepPopover()" '
+            'title="Ver dependencias">🔗</span>'
+            '</td>'
+        )
+    else:
+        dep_cell = '<td class="dep-td"></td>'
     mono = "font-family:'JetBrains Mono',monospace;font-size:9px;color:#475569;text-align:center"
     is_crit   = task.get('is_critical', False)
     crit_cls  = ' critical' if is_crit else ''
@@ -941,41 +947,33 @@ function highlightAC(items) {{
 
 document.addEventListener('click', e => {{
   if (!e.target.closest('.filter-wrap')) dd.style.display='none';
-  if (!e.target.closest('.dep-btn') && !e.target.closest('.dep-popover')) {{
-    document.querySelectorAll('.dep-popover.visible').forEach(p => p.classList.remove('visible'));
-  }}
+  // dep popover closes on mouseleave
 }});
 
-// ── Dependency popover ────────────────────────────────────────────────────
+// ── Dependency popover (hover) ────────────────────────────────────────────
 const _popover = (() => {{
   const el = document.createElement('div');
   el.className = 'dep-popover';
+  el.addEventListener('mouseenter', () => clearTimeout(_popHideTimer));
+  el.addEventListener('mouseleave', hideDepPopover);
   document.body.appendChild(el);
   return el;
 }})();
+let _popHideTimer = null;
 
-function toggleDepPopover(btn) {{
+function showDepPopover(btn) {{
+  clearTimeout(_popHideTimer);
   const preds = JSON.parse(atob(btn.getAttribute('data-preds') || 'W10='));
   const succs = JSON.parse(atob(btn.getAttribute('data-succs') || 'W10='));
-  const isVisible = btn.classList.contains('active');
 
-  // Close any open popover
-  document.querySelectorAll('.dep-btn.active').forEach(b => b.classList.remove('active'));
-  _popover.classList.remove('visible');
-
-  if (isVisible) return;
-
-  // Build content
   let html = '<div class="dep-popover-title">🔗 Dependencias</div>';
-  html += '<div class="dep-section">';
-  html += '<div class="dep-label">⬅ Predecesoras</div>';
+  html += '<div class="dep-section"><div class="dep-label">⬅ Predecesoras</div>';
   if (preds.length) {{
     preds.forEach(p => html += `<div class="dep-item"><span class="dep-arrow">←</span><span>${{p}}</span></div>`);
   }} else {{
     html += '<div class="dep-none">Sin predecesoras</div>';
   }}
-  html += '</div><div class="dep-section">';
-  html += '<div class="dep-label">➡ Sucesoras</div>';
+  html += '</div><div class="dep-section"><div class="dep-label">➡ Sucesoras</div>';
   if (succs.length) {{
     succs.forEach(s => html += `<div class="dep-item"><span class="dep-arrow">→</span><span>${{s}}</span></div>`);
   }} else {{
@@ -984,14 +982,16 @@ function toggleDepPopover(btn) {{
   html += '</div>';
   _popover.innerHTML = html;
 
-  // Position near button
   const rect = btn.getBoundingClientRect();
-  const top  = rect.bottom + window.scrollY + 4;
-  const left = Math.min(rect.left + window.scrollX, window.innerWidth - 330);
+  const top  = rect.bottom + window.scrollY + 6;
+  const left = Math.min(rect.left + window.scrollX - 10, window.innerWidth - 340);
   _popover.style.top  = top + 'px';
-  _popover.style.left = left + 'px';
+  _popover.style.left = Math.max(4, left) + 'px';
   _popover.classList.add('visible');
-  btn.classList.add('active');
+}}
+
+function hideDepPopover() {{
+  _popHideTimer = setTimeout(() => _popover.classList.remove('visible'), 150);
 }}
 
 // ── Signatures toggle ────────────────────────────────────────────────────
