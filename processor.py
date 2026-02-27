@@ -192,6 +192,22 @@ def process_project(source,
         name = f"{fn} {ln}".strip() or u.get('email', '')
         members[m['id']] = name
 
+    # Mapa package_id -> nombre (para resolver dependencias)
+    pkg_id_to_name: dict[int, str] = {}
+    for item in project['project_items']:
+        if 'package' in item:
+            pkg_id_to_name[item['package']['id']] = item['package']['name'].strip()
+
+    # Mapa package_id -> sucesoras (quien depende de el)
+    pkg_successors: dict[int, list] = defaultdict(list)
+    for item in project['project_items']:
+        if 'package' not in item: continue
+        succ_name = item['package']['name'].strip()
+        for dep in (item['package'].get('dependencies') or []):
+            prereq_id = dep.get('prerequisite_id')
+            if prereq_id:
+                pkg_successors[prereq_id].append(succ_name)
+
     cto_raw:     list[dict] = []
     tower_tasks: dict[int, list] = defaultdict(list)
     seen_keys:   set[str] = set()
@@ -226,6 +242,14 @@ def process_project(source,
         state    = pkg.get('work_state_cache', 'not_started')
         assigned = members.get(pkg.get('assigned_member_id'), '')
 
+        # Resolver predecesoras y sucesoras por nombre
+        predecessors = [
+            pkg_id_to_name[dep['prerequisite_id']]
+            for dep in (pkg.get('dependencies') or [])
+            if dep.get('prerequisite_id') in pkg_id_to_name
+        ]
+        successors = list(pkg_successors.get(pkg['id'], []))
+
         # Filtro: inicia dentro del rango O atrasada con progreso
         starts_in_range = range_start <= task_start <= range_end
         is_delayed      = task_end < today and 0 < progress < 1.0
@@ -256,15 +280,17 @@ def process_project(source,
         delay_str = compute_delay(task_start, task_end, today, category, state)
 
         tower_tasks[tower_id].append({
-            'name':       name,
-            'start':      task_start,
-            'end':        task_end,
-            'progress':   round(progress * 100),
-            'delay_str':  delay_str,
-            'state':      state,
-            'category':   category,
-            'breadcrumb': breadcrumb,
-            'assigned':   assigned,
+            'name':         name,
+            'start':        task_start,
+            'end':          task_end,
+            'progress':     round(progress * 100),
+            'delay_str':    delay_str,
+            'state':        state,
+            'category':     category,
+            'breadcrumb':   breadcrumb,
+            'assigned':     assigned,
+            'predecessors': predecessors,
+            'successors':   successors,
         })
 
     cto_items = _build_cto(cto_raw, tower_labels)
