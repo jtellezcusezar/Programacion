@@ -1,10 +1,10 @@
 """
-app.py  v3  — Chronos
+app.py  v4  — Chronos
 =====================
-- Nombre: Chronos
+- Selector modo: fecha única vs rango de fechas
+- Rango activa Gantt adaptativo en renderer
 - Sin botón descarga HTML
-- Botón PDF vive dentro del HTML (persiste comentarios)
-- Múltiples JSONs en una sola página con encabezado unificado
+- Botón PDF y toggle firmas dentro del HTML
 """
 
 import streamlit as st
@@ -14,8 +14,6 @@ import json
 
 from processor import process_project
 from renderer  import render_dashboard
-
-# ─── Configuración ────────────────────────────────────────────────────────────
 
 st.set_page_config(
     page_title="Chronos — Reportes de Obra",
@@ -50,22 +48,65 @@ with st.sidebar:
     st.markdown("Reportes Semanales de Obra")
     st.markdown("---")
 
-    st.markdown("### 📅 Fecha de corte")
+    # ── Modo de fecha ────────────────────────────────────────────────────────
+    st.markdown("### 📅 Modo de fecha")
+    modo = st.radio(
+        "Selecciona el modo",
+        ["📆 Fecha única", "📅 Rango de fechas"],
+        label_visibility="collapsed",
+    )
+
     today  = date.today()
     monday = today - timedelta(days=today.weekday())
 
-    ref_date = st.date_input(
-        "Selecciona la fecha",
-        value=monday,
-        help="Generalmente el lunes de la semana a reportar.",
-    )
-    week_end = ref_date + timedelta(days=5)
-    st.caption(
-        f"Semana: **{ref_date.day} {MONTHS[ref_date.month]}** – "
-        f"**{week_end.day} {MONTHS[week_end.month]} {week_end.year}**"
-    )
+    if modo == "📆 Fecha única":
+        ref_date = st.date_input(
+            "Fecha de corte",
+            value=monday,
+            help="Se mostrará la semana correspondiente (lunes a sábado).",
+        )
+        date_end = None
+        # Mostrar semana calculada
+        ws = ref_date - timedelta(days=ref_date.weekday())
+        we = ws + timedelta(days=5)
+        st.caption(
+            f"Semana: **{ws.day} {MONTHS[ws.month]}** – "
+            f"**{we.day} {MONTHS[we.month]} {we.year}**"
+        )
+    else:
+        ref_date = st.date_input(
+            "Fecha inicio",
+            value=monday,
+            help="Inicio del rango. El atraso se calcula desde esta fecha.",
+        )
+        date_end = st.date_input(
+            "Fecha fin",
+            value=monday + timedelta(weeks=4),
+            help="Fin del rango.",
+        )
+        if date_end <= ref_date:
+            st.error("La fecha fin debe ser posterior a la fecha inicio.")
+            date_end = None
+        else:
+            range_days = (date_end - ref_date).days + 1
+            # Mostrar escala que se usará
+            if range_days <= 6:
+                escala = "días"
+            elif range_days <= 27:
+                escala = "semanas"
+            elif range_days <= 89:
+                escala = "semanas (con mes)"
+            elif range_days <= 365:
+                escala = "meses"
+            else:
+                escala = "trimestres"
+            st.caption(
+                f"Rango: **{range_days} días** · Escala: **{escala}**"
+            )
 
     st.markdown("---")
+
+    # ── Subida de archivos ───────────────────────────────────────────────────
     st.markdown("### 📂 Proyectos")
     st.caption("Geniebelt → Proyecto → Exportar → JSON")
 
@@ -73,18 +114,17 @@ with st.sidebar:
         "Arrastra uno o varios archivos",
         type=["json", "txt"],
         accept_multiple_files=True,
-        help="Todos los proyectos se muestran en una sola página.",
     )
 
     st.markdown("---")
-    st.caption("Chronos v3.0")
+    st.caption("Chronos v4.0")
 
 
 # ─── Página principal ─────────────────────────────────────────────────────────
 
 st.markdown('<div class="app-title">🏗️ Chronos</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="app-sub">Reportes semanales de obra · '
+    '<div class="app-sub">Reportes de obra · '
     'Sube los archivos JSON exportados desde Geniebelt.</div>',
     unsafe_allow_html=True,
 )
@@ -97,14 +137,19 @@ if not uploaded_files:
     )
     with st.expander("¿Cómo funciona?"):
         st.markdown("""
-        1. **Exporta** el JSON de cada proyecto desde Geniebelt
-        2. **Sube** los archivos en el panel izquierdo
-        3. **Selecciona** la fecha de corte (lunes de la semana)
-        4. El reporte se genera automáticamente con todos los proyectos
-        5. Usa el botón **🖨️ Imprimir / Guardar como PDF** dentro del reporte
+        **Modo fecha única** → muestra la semana (lun–sáb) de la fecha seleccionada.
 
-        **El botón PDF está dentro del reporte** — así los comentarios
-        que escribas se incluyen en el PDF.
+        **Modo rango** → muestra todas las actividades entre las dos fechas.
+        El Gantt se adapta automáticamente:
+        - ≤ 6 días → columnas por día
+        - 7–27 días → columnas por semana
+        - 28–89 días → columnas por semana (con mes)
+        - 90–365 días → columnas por mes
+        - más de 365 días → columnas por trimestre
+
+        **Botones dentro del reporte:**
+        - 🖨️ Imprimir / Guardar como PDF
+        - ✍️ Habilitar / Ocultar firmas
         """)
     st.stop()
 
@@ -116,7 +161,7 @@ with st.spinner("Procesando archivos..."):
     for f in uploaded_files:
         try:
             raw  = json.load(f)
-            data = process_project(raw, reference_date=ref_date)
+            data = process_project(raw, reference_date=ref_date, date_end=date_end)
             processed.append((f.name, data, None))
         except Exception as e:
             processed.append((f.name, None, str(e)))
@@ -136,11 +181,14 @@ with st.expander(label, expanded=True):
             if data:
                 n_tw = len(data["towers"])
                 n_t  = sum(len(tw["tasks"]) for tw in data["towers"])
+                scale = data["gantt_meta"]["scale"]
+                scale_lbl = {"day":"días","week":"semanas","week_month":"sem+mes",
+                              "month":"meses","quarter":"trimestres"}.get(scale, scale)
                 st.markdown(f"""
                 <div class="file-card">
                   <div class="fc-name">✅ {fname}</div>
                   <div class="fc-meta">{data['project_name']}</div>
-                  <div class="fc-meta">{n_tw} torres · {n_t} actividades · {data['overall_progress']*100:.1f}% avance</div>
+                  <div class="fc-meta">{n_tw} torres · {n_t} actividades · escala: {scale_lbl}</div>
                 </div>""", unsafe_allow_html=True)
             else:
                 st.markdown(f"""
@@ -162,6 +210,8 @@ html     = render_dashboard(all_data)
 
 n_tasks  = sum(len(tw["tasks"])  for d in all_data for tw in d["towers"])
 n_groups = sum(len(tw["groups"]) for d in all_data for tw in d["towers"])
-height   = max(900, 300 + n_tasks * 30 + n_groups * 28 + len(all_data) * 100)
+n_cols   = max((len(d["gantt_cols"]) for d in all_data), default=6)
+# Altura dinámica: más columnas = tabla más ancha pero no más alta
+height   = max(900, 280 + n_tasks * 30 + n_groups * 26 + len(all_data) * 100)
 
 components.html(html, height=height, scrolling=True)
