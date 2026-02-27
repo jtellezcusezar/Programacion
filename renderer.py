@@ -203,7 +203,22 @@ tr.tr td{padding:4px 7px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
 tr.tr:last-child td{border-bottom:none}
 tr.tr:hover td{background:#fafafa}
 tr.tr.ht{display:none}
+tr.tr.critical td{background:#fff0f0!important}
+tr.tr.critical:hover td{background:#ffe4e4!important}
 .tn{font-weight:500;white-space:normal;word-break:break-word;max-width:190px;line-height:1.35}
+
+/* CRITICAL BADGES */
+.crit-badge{
+  display:inline-block;font-size:8px;font-weight:700;
+  background:#fee2e2;color:#dc2626;border:1px solid #fecaca;
+  border-radius:10px;padding:1px 6px;margin-left:6px;white-space:nowrap;
+}
+.crit-badge-grp{
+  display:inline-block;font-size:8px;font-weight:700;
+  background:#fee2e2;color:#dc2626;border:1px solid #fecaca;
+  border-radius:10px;padding:1px 5px;margin-left:5px;white-space:nowrap;
+  vertical-align:middle;
+}
 
 /* PILL */
 .pill{display:inline-block;font-size:8.5px;font-weight:700;
@@ -522,7 +537,9 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
     color  = _tc(idx)
     n_del  = sum(1 for t in tower["tasks"] if t["category"] == "delayed")
     n_st   = sum(1 for t in tower["tasks"] if t["category"] == "starting")
+    n_crit = sum(1 for t in tower["tasks"] if t.get("is_critical"))
     alert  = f' &nbsp;·&nbsp;<span class="alert">{n_del} con atraso</span>' if n_del else ""
+    crit_badge = f' &nbsp;·&nbsp;<span class="crit-badge">⚡ {n_crit} ruta crítica</span>' if n_crit else ""
     tw_id  = f"tw_{idx}"
 
     day_ths = "".join(
@@ -540,7 +557,7 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
        onclick="toggleTower('{tw_id}')">
     <span class="tw-chevron" id="{tw_id}-chev">▼</span>
     <span class="tw-name">{tower['label']}</span>
-    <span class="tw-stats no-print">{n_st} programadas{alert}</span>
+    <span class="tw-stats no-print">{n_st} programadas{alert}{crit_badge}</span>
   </div>
   <div class="tw-body" id="{tw_id}-body">
     <div class="gantt-wrap">
@@ -576,17 +593,20 @@ def _table_body(groups, gantt_cols, gantt_meta, today_str, is_range, tw_idx):
         n_cols     = 7 + len(gantt_cols)
         gid        = f"g_{tw_idx}_{gi}"
 
+        n_crit_grp = sum(1 for t in tasks if t.get('is_critical'))
+        crit_grp_badge = (f'<span class="crit-badge-grp">⚡ {n_crit_grp}</span>'
+                          if n_crit_grp else '')
         if inner_collapsible:
             chev = '<span class="gr-chevron">▼</span>'
             rows.append(
                 f'<tr class="gr collapsible-group" id="{gid}" '
                 f'onclick="toggleGroup(\'{gid}\')">'
-                f'<td colspan="{n_cols}">{chev}{crumb_html}</td></tr>'
+                f'<td colspan="{n_cols}">{chev}{crumb_html}{crit_grp_badge}</td></tr>'
             )
         else:
             rows.append(
                 f'<tr class="gr" id="{gid}">'
-                f'<td colspan="{n_cols}">{crumb_html}</td></tr>'
+                f'<td colspan="{n_cols}">{crumb_html}{crit_grp_badge}</td></tr>'
             )
 
         for ti, t in enumerate(tasks):
@@ -699,8 +719,10 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
         '</td>'
     )
     mono = "font-family:'JetBrains Mono',monospace;font-size:9px;color:#475569;text-align:center"
+    is_crit   = task.get('is_critical', False)
+    crit_cls  = ' critical' if is_crit else ''
     return (
-        '<tr class="tr" id="' + task_id + '" data-name="' + tname_lc + '" data-grp="' + gid + '">'
+        '<tr class="tr' + crit_cls + '" id="' + task_id + '" data-name="' + tname_lc + '" data-grp="' + gid + '">'
         '<td><div class="tn">' + tname + '</div></td>'
         + dep_cell +
         '<td>' + pill + '</td>'
