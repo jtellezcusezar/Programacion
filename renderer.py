@@ -564,12 +564,12 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
       <table>
         <thead><tr>
           <th style="min-width:175px">Actividad</th>
+          <th class="dep-th" title="Ver dependencias">🔗</th>
           <th style="min-width:105px">Estado</th>
           <th style="text-align:center">Atraso</th>
           <th style="text-align:center;white-space:nowrap">Ini.</th>
           <th style="text-align:center;white-space:nowrap">Fin</th>
           {day_ths}
-          <th class="dep-th" title="Dependencias">🔗</th>
           <th class="comment-th" title="Comentarios">💬</th>
         </tr></thead>
         <tbody>{body}</tbody>
