@@ -1,8 +1,9 @@
 """
-processor.py  v3
-- Completadas → delay_str siempre '—'
-- Semana lun–sáb
-- Atraso dinámico por fecha de corte
+processor.py  v4
+================
+- Soporte para rango de fechas (date_start + date_end)
+- Escala adaptativa del Gantt según rango
+- Completadas → delay siempre '—'
 """
 
 import json, re
@@ -17,15 +18,98 @@ _CTO_PREFIX      = 'CTO-'
 _CONTRACTS_GROUP = 'CONTRATOS'
 
 
+# ── Escala del Gantt ──────────────────────────────────────────────────────────
+
+def get_gantt_scale(range_days: int) -> dict:
+    """
+    Retorna metadatos de escala según el rango de días seleccionado.
+    scale:      'day' | 'week' | 'week_month' | 'month' | 'quarter'
+    col_width:  ancho en px de cada columna
+    col_min:    mínimo de columnas que ocupa una actividad (siempre visible)
+    """
+    if range_days <= 6:
+        return {'scale': 'day',        'col_width': 70,  'col_min': 1}
+    elif range_days <= 27:
+        return {'scale': 'week',       'col_width': 56,  'col_min': 1}
+    elif range_days <= 89:
+        return {'scale': 'week_month', 'col_width': 48,  'col_min': 1}
+    elif range_days <= 365:
+        return {'scale': 'month',      'col_width': 44,  'col_min': 1}
+    else:
+        return {'scale': 'quarter',    'col_width': 40,  'col_min': 1}
+
+
+def build_gantt_columns(date_start: date, date_end: date, scale: str) -> list[dict]:
+    """
+    Construye la lista de columnas del Gantt según la escala.
+    Cada columna: {label, col_start (date), col_end (date)}
+    """
+    cols = []
+    _MONTHS = ["","Ene","Feb","Mar","Abr","May","Jun",
+                "Jul","Ago","Sep","Oct","Nov","Dic"]
+    _QUARTERS = {1:"Q1",2:"Q1",3:"Q1",4:"Q2",5:"Q2",6:"Q2",
+                 7:"Q3",8:"Q3",9:"Q3",10:"Q4",11:"Q4",12:"Q4"}
+
+    if scale == 'day':
+        d = date_start
+        while d <= date_end:
+            days_es = ["Lun","Mar","Mié","Jue","Vie","Sáb","Dom"]
+            cols.append({'label': f"{days_es[d.weekday()]} {d.day}",
+                         'col_start': d, 'col_end': d})
+            d += timedelta(days=1)
+
+    elif scale in ('week', 'week_month'):
+        # Empezar en el lunes de date_start
+        d = date_start - timedelta(days=date_start.weekday())
+        while d <= date_end:
+            week_end = d + timedelta(days=6)
+            if scale == 'week_month':
+                label = f"S {d.day}/{_MONTHS[d.month]}"
+            else:
+                label = f"S {d.day}/{d.month}"
+            cols.append({'label': label, 'col_start': d,
+                         'col_end': min(week_end, date_end)})
+            d += timedelta(days=7)
+
+    elif scale == 'month':
+        d = date(date_start.year, date_start.month, 1)
+        while d <= date_end:
+            month_end = date(d.year + (d.month // 12),
+                             (d.month % 12) + 1, 1) - timedelta(days=1)
+            cols.append({'label': f"{_MONTHS[d.month]} {d.year}",
+                         'col_start': d,
+                         'col_end': min(month_end, date_end)})
+            if d.month == 12:
+                d = date(d.year + 1, 1, 1)
+            else:
+                d = date(d.year, d.month + 1, 1)
+
+    elif scale == 'quarter':
+        def quarter_start(dt):
+            q = (dt.month - 1) // 3
+            return date(dt.year, q * 3 + 1, 1)
+        def quarter_end(dt):
+            q = (dt.month - 1) // 3
+            end_month = q * 3 + 3
+            if end_month == 12:
+                return date(dt.year, 12, 31)
+            return date(dt.year, end_month + 1, 1) - timedelta(days=1)
+
+        d = quarter_start(date_start)
+        while d <= date_end:
+            qe = quarter_end(d)
+            cols.append({'label': f"{_QUARTERS[d.month]} {d.year}",
+                         'col_start': d,
+                         'col_end': min(qe, date_end)})
+            d = qe + timedelta(days=1)
+
+    return cols
+
+
+# ── Delay ─────────────────────────────────────────────────────────────────────
+
 def compute_delay(task_start: date, task_end: date,
                   reference_date: date, category: str, state: str) -> str:
-    """
-    Reglas:
-    - completed → siempre '—'
-    - delayed   → reference_date - task_end
-    - starting  → reference_date - task_start (solo si task_start < reference_date)
-    Tope >= 100 → '+99'. Sin '+' en valores normales.
-    """
     if state == 'completed':
         return '—'
     if category == 'delayed':
@@ -37,29 +121,51 @@ def compute_delay(task_start: date, task_end: date,
             return '—'
     else:
         return '—'
-
     if days <= 0:
         return '—'
     return '+99' if days >= 100 else str(days)
 
 
-def process_project(source, reference_date: date = None) -> dict:
+# ── Proceso principal ─────────────────────────────────────────────────────────
+
+def process_project(source,
+                    reference_date: date = None,
+                    date_end: date = None) -> dict:
+    """
+    Args:
+        source:         JSON de Geniebelt
+        reference_date: fecha de inicio / fecha de corte (default: hoy lunes)
+        date_end:       fecha fin del rango (default: None → semana única)
+    """
     today      = reference_date or date.today()
-    week_start = today - timedelta(days=today.weekday())
-    week_end   = week_start + timedelta(days=5)   # sábado
+    week_start = today - timedelta(days=today.weekday())   # lunes
+
+    # Rango de fechas
+    is_range  = date_end is not None and date_end > today
+    if is_range:
+        range_start = week_start
+        range_end   = date_end
+    else:
+        range_start = week_start
+        range_end   = week_start + timedelta(days=5)       # sábado
+
+    range_days = (range_end - range_start).days + 1
+    gantt_meta = get_gantt_scale(range_days)
+    gantt_cols = build_gantt_columns(range_start, range_end, gantt_meta['scale'])
 
     raw     = _load(source)
     project = raw['project']
 
+    # Mapa project_item id → nombre de grupo
     item_to_group: dict[int, str] = {}
     for item in project['project_items']:
         if 'group' in item:
             item_to_group[item['id']] = item['group']['name'].strip()
 
+    # Detectar torres (nivel índice 2)
     tower_ids: dict[int, str] = {}
     for item in project['project_items']:
-        if 'package' not in item:
-            continue
+        if 'package' not in item: continue
         path = item['path_outline']
         if len(path) >= 3:
             tid = path[2]
@@ -68,8 +174,7 @@ def process_project(source, reference_date: date = None) -> dict:
 
     root_names: set[str] = set()
     for item in project['project_items']:
-        if 'package' not in item:
-            continue
+        if 'package' not in item: continue
         path = item['path_outline']
         if path and path[0] in item_to_group:
             root_names.add(item_to_group[path[0]])
@@ -78,13 +183,21 @@ def process_project(source, reference_date: date = None) -> dict:
     tower_item_ids = set(tower_ids.keys())
     tower_labels   = dict(tower_ids)
 
+    # Mapa miembro id → nombre
+    members: dict[int, str] = {}
+    for m in project.get('members', []):
+        u = m.get('user', {})
+        fn = u.get('first_name') or ''
+        ln = u.get('last_name')  or ''
+        name = f"{fn} {ln}".strip() or u.get('email', '')
+        members[m['id']] = name
+
     cto_raw:     list[dict] = []
     tower_tasks: dict[int, list] = defaultdict(list)
     seen_keys:   set[str] = set()
 
     for item in project['project_items']:
-        if 'package' not in item:
-            continue
+        if 'package' not in item: continue
         pkg  = item['package']
         name = pkg['name'].strip()
         path = item['path_outline']
@@ -95,17 +208,14 @@ def process_project(source, reference_date: date = None) -> dict:
                 cto_raw.append({'name': name, 'start': date.fromisoformat(sd)})
             continue
 
-        if pkg.get('milestone'):
-            continue
+        if pkg.get('milestone'): continue
 
         path_names = [item_to_group.get(pid, '') for pid in path]
-        if _CONTRACTS_GROUP in path_names:
-            continue
+        if _CONTRACTS_GROUP in path_names: continue
 
         sd_str = pkg.get('start_date')
         ed_str = pkg.get('end_date')
-        if not sd_str or not ed_str:
-            continue
+        if not sd_str or not ed_str: continue
         try:
             task_start = date.fromisoformat(sd_str)
             task_end   = date.fromisoformat(ed_str)
@@ -114,16 +224,17 @@ def process_project(source, reference_date: date = None) -> dict:
 
         progress = float(pkg.get('progress_cache', 0))
         state    = pkg.get('work_state_cache', 'not_started')
+        assigned = members.get(pkg.get('assigned_member_id'), '')
 
-        starts_this_week = week_start <= task_start <= week_end
-        is_delayed       = task_end < today and 0 < progress < 1.0
+        # Filtro: inicia dentro del rango O atrasada con progreso
+        starts_in_range = range_start <= task_start <= range_end
+        is_delayed      = task_end < today and 0 < progress < 1.0
 
-        if not starts_this_week and not is_delayed:
+        if not starts_in_range and not is_delayed:
             continue
 
         dedup_key = name + sd_str
-        if dedup_key in seen_keys:
-            continue
+        if dedup_key in seen_keys: continue
         seen_keys.add(dedup_key)
 
         tower_id = None
@@ -131,8 +242,7 @@ def process_project(source, reference_date: date = None) -> dict:
             if pid in tower_item_ids:
                 tower_id = pid
                 break
-        if tower_id is None:
-            continue
+        if tower_id is None: continue
 
         breadcrumb = [
             item_to_group[pid]
@@ -154,6 +264,7 @@ def process_project(source, reference_date: date = None) -> dict:
             'state':      state,
             'category':   category,
             'breadcrumb': breadcrumb,
+            'assigned':   assigned,
         })
 
     cto_items = _build_cto(cto_raw, tower_labels)
@@ -161,8 +272,7 @@ def process_project(source, reference_date: date = None) -> dict:
     towers = []
     for tid in sorted(tower_ids.keys(), key=lambda x: tower_labels.get(x, '')):
         tasks = tower_tasks.get(tid, [])
-        if not tasks:
-            continue
+        if not tasks: continue
         groups: dict[str, list] = defaultdict(list)
         for t in tasks:
             key = ' › '.join(t['breadcrumb']) if t['breadcrumb'] else 'Sin grupo'
@@ -187,8 +297,12 @@ def process_project(source, reference_date: date = None) -> dict:
         'project_id':       project['id'],
         'overall_progress': float(project.get('progress_cache', 0)),
         'reference_date':   today,
-        'week_start':       week_start,
-        'week_end':         week_end,
+        'week_start':       range_start,
+        'week_end':         range_end,
+        'range_days':       range_days,
+        'is_range':         is_range,
+        'gantt_meta':       gantt_meta,
+        'gantt_cols':       gantt_cols,
         'towers':           towers,
         'cto_items':        cto_items,
         'kpis':             kpis,
@@ -196,14 +310,11 @@ def process_project(source, reference_date: date = None) -> dict:
 
 
 def _load(source) -> dict:
-    if isinstance(source, dict):
-        return source
+    if isinstance(source, dict): return source
     if isinstance(source, str):
         s = source.strip()
-        if s.startswith('{'):
-            return json.loads(s)
-        with open(source, encoding='utf-8') as f:
-            return json.load(f)
+        if s.startswith('{'): return json.loads(s)
+        with open(source, encoding='utf-8') as f: return json.load(f)
     return json.load(source)
 
 
@@ -220,8 +331,7 @@ def _build_cto(cto_raw, tower_labels) -> list:
                 break
         if not tower_label:
             m = re.match(r'^(\S+)', suffix)
-            if m:
-                tower_label = m.group(1)
+            if m: tower_label = m.group(1)
         name_lower = name.lower()
         if 'programación' in name_lower or 'programacion' in name_lower:
             tipo = 'Programación'
@@ -229,11 +339,7 @@ def _build_cto(cto_raw, tower_labels) -> list:
             tipo = 'Obra'
         else:
             tipo = suffix.replace(tower_label or '', '').strip()
-        result.append({
-            'tower': tower_label or '?',
-            'label': tipo,
-            'date':  c['start'],
-        })
+        result.append({'tower': tower_label or '?', 'label': tipo, 'date': c['start']})
     result.sort(key=lambda x: x['date'])
     return result
 
@@ -241,9 +347,16 @@ def _build_cto(cto_raw, tower_labels) -> list:
 if __name__ == '__main__':
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/user-data/uploads/Projecto.txt'
-    data = process_project(path, reference_date=date(2026, 2, 23))
-    print(f"OK: {data['project_name']} | {len(data['towers'])} torres | CTO: {len(data['cto_items'])}")
-    for t in data['towers']:
-        completed = [x for x in t['tasks'] if x['state']=='completed']
-        for c in completed[:2]:
-            print(f"  COMPLETADA: {c['name'][:40]} → delay={c['delay_str']}")
+    ref  = date(2026, 2, 23)
+
+    # Test fecha única
+    d1 = process_project(path, reference_date=ref)
+    print(f"Fecha única: scale={d1['gantt_meta']['scale']} cols={len(d1['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d1['towers'])}")
+
+    # Test rango 3 semanas
+    d2 = process_project(path, reference_date=ref, date_end=date(2026, 3, 15))
+    print(f"3 semanas:   scale={d2['gantt_meta']['scale']} cols={len(d2['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d2['towers'])}")
+
+    # Test rango 3 meses
+    d3 = process_project(path, reference_date=ref, date_end=date(2026, 5, 23))
+    print(f"3 meses:     scale={d3['gantt_meta']['scale']} cols={len(d3['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d3['towers'])}")
