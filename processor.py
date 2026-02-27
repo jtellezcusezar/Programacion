@@ -208,6 +208,9 @@ def process_project(source,
             if prereq_id:
                 pkg_successors[prereq_id].append(succ_name)
 
+    # Calcular ruta crítica sobre el proyecto completo
+    critical_ids = compute_critical_path(project)
+
     cto_raw:     list[dict] = []
     tower_tasks: dict[int, list] = defaultdict(list)
     seen_keys:   set[str] = set()
@@ -291,6 +294,7 @@ def process_project(source,
             'assigned':     assigned,
             'predecessors': predecessors,
             'successors':   successors,
+            'is_critical':  pkg['id'] in critical_ids,
         })
 
     cto_items = _build_cto(cto_raw, tower_labels)
@@ -368,6 +372,121 @@ def _build_cto(cto_raw, tower_labels) -> list:
         result.append({'tower': tower_label or '?', 'label': tipo, 'date': c['start']})
     result.sort(key=lambda x: x['date'])
     return result
+
+
+def compute_critical_path(project: dict) -> set:
+    """
+    Calcula la ruta crítica del proyecto usando CPM por componente conectado.
+    Retorna un set de package_ids que pertenecen a la ruta crítica (holgura total = 0).
+    """
+    from collections import defaultdict, deque
+
+    # Construir mapa completo de todos los packages con fechas
+    pkgs = {}
+    for item in project['project_items']:
+        if 'package' in item:
+            pkg = item['package']
+            if pkg.get('start_date') and pkg.get('end_date'):
+                pkgs[pkg['id']] = pkg
+
+    # Grafo de dependencias
+    preds_map = defaultdict(list)
+    succs_map = defaultdict(list)
+    for pid, pkg in pkgs.items():
+        for dep in (pkg.get('dependencies') or []):
+            pre = dep.get('prerequisite_id')
+            if pre and pre in pkgs:
+                preds_map[pid].append(pre)
+                succs_map[pre].append(pid)
+
+    def get_dur(pkg):
+        try:
+            s = date.fromisoformat(pkg['start_date'])
+            e = date.fromisoformat(pkg['end_date'])
+            return max(1, (e - s).days)
+        except Exception:
+            return 1
+
+    # Encontrar componentes conectados (grafo no dirigido)
+    visited = set()
+    components = []
+    adj = defaultdict(set)
+    for pid in pkgs:
+        for pre in preds_map[pid]:
+            adj[pid].add(pre)
+            adj[pre].add(pid)
+
+    for start in pkgs:
+        if start in visited:
+            continue
+        comp = []
+        stack = [start]
+        while stack:
+            n = stack.pop()
+            if n in visited:
+                continue
+            visited.add(n)
+            comp.append(n)
+            stack.extend(adj[n] - visited)
+        if len(comp) > 1:   # solo cadenas con dependencias reales
+            components.append(comp)
+
+    # CPM por componente
+    critical = set()
+    for comp in components:
+        comp_set = set(comp)
+
+        # Orden topológico dentro del componente
+        in_deg = {
+            pid: sum(1 for p in preds_map[pid] if p in comp_set)
+            for pid in comp
+        }
+        queue = deque(pid for pid in comp if in_deg[pid] == 0)
+        topo  = []
+        while queue:
+            n = queue.popleft()
+            topo.append(n)
+            for s in succs_map[n]:
+                if s in comp_set:
+                    in_deg[s] -= 1
+                    if in_deg[s] == 0:
+                        queue.append(s)
+
+        if not topo:
+            continue
+
+        # Forward pass
+        ES = {}
+        EF = {}
+        for pid in topo:
+            es = max(
+                (EF[p] for p in preds_map[pid] if p in comp_set and p in EF),
+                default=0
+            )
+            ES[pid] = es
+            EF[pid] = es + get_dur(pkgs[pid])
+
+        comp_end = max(EF.values())
+
+        # Backward pass
+        LS = {}
+        LF = {}
+        for pid in reversed(topo):
+            lf = min(
+                (LS[s] for s in succs_map[pid] if s in comp_set and s in LS),
+                default=comp_end
+            )
+            LF[pid] = lf
+            LS[pid] = lf - get_dur(pkgs[pid])
+
+        # Holgura total = 0 → ruta crítica
+        for pid in comp:
+            tf = LS.get(pid, 0) - ES.get(pid, 0)
+            if tf <= 0:
+                critical.add(pid)
+
+    return critical
+
 
 
 if __name__ == '__main__':
