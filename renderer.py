@@ -5,10 +5,10 @@ Cambios:
  1. Comentario de actividad como toggle (igual que CTO)
  2. Desplegable en encabezado de torre (siempre)
  3. Desplegable en agrupadores internos (solo en rango >= semana)
- 4. Filtro corregido: oculta agrupadores vacíos
- 6. Autocomplete en filtro
- 4b. Sección de firmas (toggle habilitar/ocultar)
- 5. Gantt adaptativo según escala
+ 4. Filtro corregido: oculta agrupadores vacíos + botón X para limpiar
+ 5. Autocomplete en filtro
+ 6. Sección de firmas (toggle habilitar/ocultar)
+ 7. Gantt adaptativo según escala
 """
 
 from datetime import date, timedelta
@@ -110,12 +110,21 @@ body{font-family:'Inter',sans-serif;background:#fff;color:var(--txt);
 
 /* FILTER + AUTOCOMPLETE */
 .filter-wrap{margin-bottom:11px;position:relative}
-.filter-wrap input{
-  width:100%;padding:7px 12px;font-size:12px;font-family:'Inter',sans-serif;
+.filter-input-row{position:relative;display:flex;align-items:center}
+.filter-input-row input{
+  width:100%;padding:7px 34px 7px 12px;font-size:12px;font-family:'Inter',sans-serif;
   border:1px solid var(--bor);border-radius:6px;outline:none;color:var(--txt);
 }
-.filter-wrap input:focus{border-color:var(--blue)}
-.filter-wrap input::placeholder{color:#94a3b8}
+.filter-input-row input:focus{border-color:var(--blue)}
+.filter-input-row input::placeholder{color:#94a3b8}
+.filter-clear-btn{
+  position:absolute;right:9px;
+  background:none;border:none;cursor:pointer;
+  font-size:14px;line-height:1;color:#94a3b8;
+  padding:2px 4px;border-radius:3px;
+  display:none;
+}
+.filter-clear-btn:hover{color:var(--txt);background:#f1f5f9}
 .ac-dropdown{
   position:absolute;top:calc(100% + 2px);left:0;right:0;
   background:#fff;border:1px solid var(--bor);border-radius:6px;
@@ -205,22 +214,7 @@ tr.tr td{padding:4px 7px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
 tr.tr:last-child td{border-bottom:none}
 tr.tr:hover td{background:#fafafa}
 tr.tr.ht{display:none}
-tr.tr.critical td{background:#fff0f0!important}
-tr.tr.critical:hover td{background:#ffe4e4!important}
 .tn{font-weight:500;white-space:normal;word-break:break-word;max-width:190px;line-height:1.35}
-
-/* CRITICAL BADGES */
-.crit-badge{
-  display:inline-block;font-size:8px;font-weight:700;
-  background:#fee2e2;color:#dc2626;border:1px solid #fecaca;
-  border-radius:10px;padding:1px 6px;margin-left:6px;white-space:nowrap;
-}
-.crit-badge-grp{
-  display:inline-block;font-size:8px;font-weight:700;
-  background:#fee2e2;color:#dc2626;border:1px solid #fecaca;
-  border-radius:10px;padding:1px 5px;margin-left:5px;white-space:nowrap;
-  vertical-align:middle;
-}
 
 /* PILL */
 .pill{display:inline-block;font-size:8.5px;font-weight:700;
@@ -505,11 +499,15 @@ def _legend(today_str):
 def _filter_bar(all_names):
     return """
 <div class="filter-wrap no-print">
-  <input type="text" id="global-filter"
-         oninput="onFilterInput(this)"
-         onkeydown="onFilterKey(event)"
-         placeholder="🔍  Filtrar actividades por nombre..."
-         autocomplete="off">
+  <div class="filter-input-row">
+    <input type="text" id="global-filter"
+           oninput="onFilterInput(this)"
+           onkeydown="onFilterKey(event)"
+           placeholder="🔍  Filtrar actividades por nombre..."
+           autocomplete="off">
+    <button class="filter-clear-btn" id="filter-clear-btn"
+            onclick="clearFilter()" title="Limpiar filtro">✕</button>
+  </div>
   <div class="ac-dropdown" id="ac-dropdown"></div>
 </div>"""
 
@@ -539,9 +537,7 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
     color  = _tc(idx)
     n_del  = sum(1 for t in tower["tasks"] if t["category"] == "delayed")
     n_st   = sum(1 for t in tower["tasks"] if t["category"] == "starting")
-    n_crit = sum(1 for t in tower["tasks"] if t.get("is_critical"))
     alert  = f' &nbsp;·&nbsp;<span class="alert">{n_del} con atraso</span>' if n_del else ""
-    crit_badge = f' &nbsp;·&nbsp;<span class="crit-badge">⚡ {n_crit} ruta crítica</span>' if n_crit else ""
     tw_id  = f"tw_{idx}"
 
     day_ths = "".join(
@@ -559,7 +555,7 @@ def _tower_section(tower, idx, gantt_cols, gantt_meta, today_str, is_range, col_
        onclick="toggleTower('{tw_id}')">
     <span class="tw-chevron" id="{tw_id}-chev">▼</span>
     <span class="tw-name">{tower['label']}</span>
-    <span class="tw-stats no-print">{n_st} programadas{alert}{crit_badge}</span>
+    <span class="tw-stats no-print">{n_st} programadas{alert}</span>
   </div>
   <div class="tw-body" id="{tw_id}-body">
     <div class="gantt-wrap">
@@ -595,20 +591,17 @@ def _table_body(groups, gantt_cols, gantt_meta, today_str, is_range, tw_idx):
         n_cols     = 7 + len(gantt_cols)
         gid        = f"g_{tw_idx}_{gi}"
 
-        n_crit_grp = sum(1 for t in tasks if t.get('is_critical'))
-        crit_grp_badge = (f'<span class="crit-badge-grp">⚡ {n_crit_grp}</span>'
-                          if n_crit_grp else '')
         if inner_collapsible:
             chev = '<span class="gr-chevron">▼</span>'
             rows.append(
                 f'<tr class="gr collapsible-group" id="{gid}" '
                 f'onclick="toggleGroup(\'{gid}\')">'
-                f'<td colspan="{n_cols}">{chev}{crumb_html}{crit_grp_badge}</td></tr>'
+                f'<td colspan="{n_cols}">{chev}{crumb_html}</td></tr>'
             )
         else:
             rows.append(
                 f'<tr class="gr" id="{gid}">'
-                f'<td colspan="{n_cols}">{crumb_html}{crit_grp_badge}</td></tr>'
+                f'<td colspan="{n_cols}">{crumb_html}</td></tr>'
             )
 
         for ti, t in enumerate(tasks):
@@ -663,22 +656,18 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
         is_today_col = scale == "day" and str(cs) == today_str
         td_cls = " tday" if is_today_col else ""
 
-        # Overlap: task overlaps this column?
         overlaps = ts <= ce and te >= cs
         if not overlaps:
             cells.append(f'<td class="dc{td_cls}" style="width:{col_w}px"></td>')
             continue
 
-        # Find span: how many consecutive columns this bar covers starting here
         if ci == 0 or not (gantt_cols[ci-1]["col_end"] >= ts):
-            # First column of the bar
             span = 1
             for cj in range(ci + 1, len(gantt_cols)):
                 if ts <= gantt_cols[cj]["col_end"] and te >= gantt_cols[cj]["col_start"]:
                     span += 1
                 else:
                     break
-            # Ensure minimum visibility: span >= 1 always
             span = max(1, span)
             bar_lbl = lbl if span > 1 or col_w >= 48 else ("·" if pct == 0 else "")
             cells.append(
@@ -689,8 +678,6 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
                 f'<div class="btx">{bar_lbl}</div>'
                 f'</div></td>'
             )
-        # Subsequent columns handled by colspan — skip
-        # (We detect "already covered" by checking if previous col ended >= ts)
 
     gantt = "".join(cells)
     sl = f"{ts.month:02d}/{ts.day:02d}"
@@ -698,17 +685,14 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
     name_safe = task['name'].replace('"', '&quot;')
 
     import json as _json
+    import base64 as _b64
     preds    = task.get('predecessors', [])
     succs    = task.get('successors',   [])
     has_deps = bool(preds or succs)
-    dep_icon = '\U0001f517' if has_deps else '\xb7'
-    dep_clr  = 'color:var(--pur)' if has_deps else 'color:#e2e8f0'
 
     tname    = task["name"]
     tname_lc = tname.lower()
 
-    # Encode as base64 to avoid any quoting issues with special chars in names
-    import base64 as _b64
     preds_b64 = _b64.b64encode(_json.dumps(preds, ensure_ascii=False).encode()).decode()
     succs_b64 = _b64.b64encode(_json.dumps(succs, ensure_ascii=False).encode()).decode()
     if has_deps:
@@ -724,11 +708,11 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
         )
     else:
         dep_cell = '<td class="dep-td"></td>'
+
     mono = "font-family:'JetBrains Mono',monospace;font-size:9px;color:#475569;text-align:center"
-    is_crit   = task.get('is_critical', False)
-    crit_cls  = ' critical' if is_crit else ''
+
     return (
-        '<tr class="tr' + crit_cls + '" id="' + task_id + '" data-name="' + tname_lc + '" data-grp="' + gid + '">'
+        '<tr class="tr" id="' + task_id + '" data-name="' + tname_lc + '" data-grp="' + gid + '">'
         '<td><div class="tn">' + tname + '</div></td>'
         + dep_cell +
         '<td>' + pill + '</td>'
@@ -742,7 +726,6 @@ def _task_row(task, gantt_cols, gantt_meta, today_str, gid, task_id, comment_id)
         '</td>'
         '</tr>'
     )
-
 
 
 def _comment_row(comment_id, n_day_cols):
@@ -812,7 +795,6 @@ document.addEventListener('DOMContentLoaded', () => {{
   document.querySelectorAll('textarea').forEach(ta => {{
     ta.addEventListener('input', () => autoGrow(ta));
   }});
-  // Observer para nuevos textareas (comentarios que se abren)
   new MutationObserver(muts => {{
     muts.forEach(m => m.addedNodes.forEach(n => {{
       if (n.nodeType===1) n.querySelectorAll && n.querySelectorAll('textarea')
@@ -834,12 +816,10 @@ function toggleTower(twId) {{
 function toggleGroup(gid) {{
   const grRow = document.getElementById(gid);
   const tasks = document.querySelectorAll(`tr.tr[data-grp="${{gid}}"]`);
-  const comments = document.querySelectorAll(`tr.comment-row[id^="cm_"]`);
   const isCollapsed = grRow.classList.contains('collapsed-grp');
   grRow.classList.toggle('collapsed-grp', !isCollapsed);
   tasks.forEach(t => {{
     t.style.display = isCollapsed ? '' : 'none';
-    // también ocultar su fila de comentario
     const cid = t.id.replace('t_','cm_');
     const cr  = document.getElementById(cid);
     if (cr) cr.style.display = isCollapsed ? '' : 'none';
@@ -870,12 +850,23 @@ function toggleCollapsible(uid, btn, openTxt, closeTxt) {{
 }}
 
 // ── Filter + Autocomplete ─────────────────────────────────────────────────
-const dd = document.getElementById('ac-dropdown');
+const dd       = document.getElementById('ac-dropdown');
+const clearBtn = document.getElementById('filter-clear-btn');
 
 function onFilterInput(input) {{
   const q = input.value.toLowerCase().trim();
+  clearBtn.style.display = input.value ? 'block' : 'none';
   applyFilter(q);
   showAC(input.value.trim());
+}}
+
+function clearFilter() {{
+  const inp = document.getElementById('global-filter');
+  inp.value = '';
+  clearBtn.style.display = 'none';
+  dd.style.display = 'none';
+  applyFilter('');
+  inp.focus();
 }}
 
 function applyFilter(q) {{
@@ -927,6 +918,7 @@ function showAC(query) {{
 function selectAC(name) {{
   const inp = document.getElementById('global-filter');
   inp.value = name;
+  clearBtn.style.display = 'block';
   dd.style.display = 'none';
   applyFilter(name.toLowerCase());
 }}
@@ -947,7 +939,6 @@ function highlightAC(items) {{
 
 document.addEventListener('click', e => {{
   if (!e.target.closest('.filter-wrap')) dd.style.display='none';
-  // dep popover closes on mouseleave
 }});
 
 // ── Dependency popover (hover) ────────────────────────────────────────────
@@ -1047,7 +1038,7 @@ window.addEventListener('afterprint', () => {{
 if __name__ == '__main__':
     import sys
     sys.path.insert(0, '/home/claude')
-    from processor_v4 import process_project
+    from processor import process_project
     path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/user-data/uploads/Projecto.txt'
     data = process_project(path, reference_date=date(2026, 2, 23))
     html = render_dashboard([data])
