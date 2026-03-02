@@ -208,9 +208,6 @@ def process_project(source,
             if prereq_id:
                 pkg_successors[prereq_id].append(succ_name)
 
-    # Calcular ruta crítica sobre el proyecto completo
-    critical_ids = compute_critical_path(project)
-
     cto_raw:     list[dict] = []
     tower_tasks: dict[int, list] = defaultdict(list)
     seen_keys:   set[str] = set()
@@ -294,7 +291,6 @@ def process_project(source,
             'assigned':     assigned,
             'predecessors': predecessors,
             'successors':   successors,
-            'is_critical':  pkg['id'] in critical_ids,
         })
 
     cto_items = _build_cto(cto_raw, tower_labels)
@@ -374,150 +370,16 @@ def _build_cto(cto_raw, tower_labels) -> list:
     return result
 
 
-def compute_critical_path(project: dict) -> set:
-    """
-    Calcula la ruta crítica usando CPM por componente conectado.
-    - Usa fechas programadas reales como ancla del forward pass
-    - Usa days_cache / work_duration como duración laboral
-    - Incluye lag_days de cada dependencia
-    - Holgura total <= 0 → ruta crítica
-    """
-    from collections import defaultdict, deque
-
-    pkgs = {}
-    for item in project['project_items']:
-        if 'package' in item:
-            pkg = item['package']
-            if pkg.get('start_date') and pkg.get('end_date'):
-                pkgs[pkg['id']] = pkg
-
-    # Fecha base para convertir fechas a números de día
-    try:
-        proj_start = date.fromisoformat(project['start_date'])
-    except Exception:
-        proj_start = min(
-            date.fromisoformat(pkg['start_date'])
-            for pkg in pkgs.values()
-        )
-
-    def to_days(d_str):
-        return (date.fromisoformat(d_str) - proj_start).days
-
-    def work_dur(pkg):
-        d = pkg.get('days_cache') or pkg.get('work_duration')
-        if d and int(d) > 0:
-            return int(d)
-        try:
-            s = date.fromisoformat(pkg['start_date'])
-            e = date.fromisoformat(pkg['end_date'])
-            return max(1, (e - s).days)
-        except Exception:
-            return 1
-
-    # Grafo con lag_days
-    preds_map = defaultdict(list)   # pid -> [(prereq_id, lag)]
-    succs_map = defaultdict(list)   # pid -> [(succ_id, lag)]
-    for pid, pkg in pkgs.items():
-        for dep in (pkg.get('dependencies') or []):
-            pre   = dep.get('prerequisite_id')
-            lag   = int(dep.get('delay_days') or 0)
-            if pre and pre in pkgs:
-                preds_map[pid].append((pre, lag))
-                succs_map[pre].append((pid, lag))
-
-    # Componentes conectados
-    visited = set()
-    components = []
-    adj = defaultdict(set)
-    for pid in pkgs:
-        for pre, _ in preds_map[pid]:
-            adj[pid].add(pre)
-            adj[pre].add(pid)
-
-    for start in pkgs:
-        if start in visited:
-            continue
-        comp = []
-        stack = [start]
-        while stack:
-            n = stack.pop()
-            if n in visited:
-                continue
-            visited.add(n)
-            comp.append(n)
-            stack.extend(adj[n] - visited)
-        if len(comp) > 1:
-            components.append(comp)
-
-    critical = set()
-
-    for comp in components:
-        comp_set = set(comp)
-        in_deg = {
-            pid: sum(1 for p, _ in preds_map[pid] if p in comp_set)
-            for pid in comp
-        }
-        queue = deque(pid for pid in comp if in_deg[pid] == 0)
-        topo  = []
-        while queue:
-            n = queue.popleft()
-            topo.append(n)
-            for s, _ in succs_map[n]:
-                if s in comp_set:
-                    in_deg[s] -= 1
-                    if in_deg[s] == 0:
-                        queue.append(s)
-        if not topo:
-            continue
-
-        # Forward pass — ancla en fecha programada
-        ES = {}
-        EF = {}
-        for pid in topo:
-            pkg = pkgs[pid]
-            sched_start = to_days(pkg['start_date'])
-            pred_ef = max(
-                (EF[p] + lag for p, lag in preds_map[pid] if p in comp_set and p in EF),
-                default=sched_start
-            )
-            ES[pid] = max(sched_start, pred_ef)
-            EF[pid] = ES[pid] + work_dur(pkg)
-
-        comp_end = max(EF.values())
-
-        # Backward pass
-        LS = {}
-        LF = {}
-        for pid in reversed(topo):
-            succ_ls = min(
-                (LS[s] - lag for s, lag in succs_map[pid] if s in comp_set and s in LS),
-                default=comp_end
-            )
-            LF[pid] = min(comp_end, succ_ls)
-            LS[pid] = LF[pid] - work_dur(pkgs[pid])
-
-        for pid in comp:
-            tf = LS.get(pid, 0) - ES.get(pid, 0)
-            if tf <= 0:
-                critical.add(pid)
-
-    return critical
-
-
-
 if __name__ == '__main__':
     import sys
     path = sys.argv[1] if len(sys.argv) > 1 else '/mnt/user-data/uploads/Projecto.txt'
     ref  = date(2026, 2, 23)
 
-    # Test fecha única
     d1 = process_project(path, reference_date=ref)
     print(f"Fecha única: scale={d1['gantt_meta']['scale']} cols={len(d1['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d1['towers'])}")
 
-    # Test rango 3 semanas
     d2 = process_project(path, reference_date=ref, date_end=date(2026, 3, 15))
     print(f"3 semanas:   scale={d2['gantt_meta']['scale']} cols={len(d2['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d2['towers'])}")
 
-    # Test rango 3 meses
     d3 = process_project(path, reference_date=ref, date_end=date(2026, 5, 23))
     print(f"3 meses:     scale={d3['gantt_meta']['scale']} cols={len(d3['gantt_cols'])} tasks={sum(len(t['tasks']) for t in d3['towers'])}")
